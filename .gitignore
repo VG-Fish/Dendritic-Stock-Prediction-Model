@@ -1,0 +1,7 @@
+# Project stuff
+.venv/
+stock_market_dataset/
+__pycache__/
+
+# MacOS stuff
+.DS_Store
