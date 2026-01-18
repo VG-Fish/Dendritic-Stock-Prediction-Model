@@ -4,94 +4,102 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Self
 
 import pandas as pd
 import polars as pl
 import yfinance as yf
 from tqdm import tqdm
 
-period: str = "max"
-DATA_DIRECTORY: str = "stock_market_dataset"
 
-if not os.path.exists(DATA_DIRECTORY):
-    os.mkdir(DATA_DIRECTORY)
-    os.mkdir(f"{DATA_DIRECTORY}/stocks")
-    os.mkdir(f"{DATA_DIRECTORY}/etfs")
+class NASDAQDownloader:
+    def __init__(self: Self, data_directory: str = "nasdaq_dataset") -> None:
+        self.data_directory = data_directory
 
-data: pl.DataFrame = pl.read_csv(
-    "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
-)
-cleaned_data: pl.DataFrame = data.filter(pl.col("Test Issue") == "N")
-symbols: pl.Series = cleaned_data["Symbol"]
+        data: pl.DataFrame = pl.read_csv(
+            "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
+        )
+        self.cleaned_data: pl.DataFrame = data.filter(pl.col("Test Issue") == "N")
+        self.symbols: pl.Series = self.cleaned_data["Symbol"]
 
-total: int = len(symbols)
-is_valid: List[bool] = [False] * len(symbols)
+    def _create_directories(self: Self) -> None:
+        if not os.path.exists(self.data_directory):
+            os.mkdir(self.data_directory)
+            os.mkdir(f"{self.data_directory}/stocks")
+            os.mkdir(f"{self.data_directory}/etfs")
 
+    def _process_symbol(self: Self, i: int) -> bool:
+        symbol: str = self.symbols[i]
+        periods: List[str] = [
+            "1d",
+            "5d",
+            "1mo",
+            "3mo",
+            "6mo",
+            "1y",
+            "2y",
+            "5y",
+            "10y",
+            "max",
+        ]
+        stock_data_pd: Optional[pd.DataFrame] = None
+        # Start with longest periods, if getting all the data is successful, break the loop.
+        for period in reversed(periods):
+            try:
+                stock_data_pd = yf.download(symbol, period=period)
+            except Exception:
+                continue
 
-def process_symbol(i: int) -> bool:
-    symbol: str = symbols[i]
-    periods: List[str] = [
-        "1d",
-        "5d",
-        "1mo",
-        "3mo",
-        "6mo",
-        "1y",
-        "2y",
-        "5y",
-        "10y",
-        "max",
-    ]
-    stock_data_pd: Optional[pd.DataFrame] = None
-    # Start with longest periods, if getting all the data is successful, break the loop.
-    for period in reversed(periods):
-        try:
-            stock_data_pd = yf.download(symbol, period=period)
-        except Exception:
-            continue
+            if stock_data_pd is None or stock_data_pd.empty:
+                continue
+            break
 
+        # Safety check
         if stock_data_pd is None or stock_data_pd.empty:
-            continue
-        break
+            return False
 
-    # Safety check
-    if stock_data_pd is None or stock_data_pd.empty:
-        return False
+        stock_data: pl.DataFrame = pl.from_pandas(stock_data_pd)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
-    stock_data: pl.DataFrame = pl.from_pandas(stock_data_pd)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        etf_flag = self.cleaned_data[i]["ETF"][0]
+        match etf_flag:
+            case "Y":
+                stock_data.write_csv(f"{self.data_directory}/etfs/{symbol}.csv")
+            case "N":
+                stock_data.write_csv(f"{self.data_directory}/stocks/{symbol}.csv")
 
-    etf_flag = cleaned_data[i]["ETF"][0]
-    match etf_flag:
-        case "Y":
-            stock_data.write_csv(f"{DATA_DIRECTORY}/etfs/{symbol}.csv")
-        case "N":
-            stock_data.write_csv(f"{DATA_DIRECTORY}/stocks/{symbol}.csv")
+        return True
 
-    return True
+    def download_dataset(self: Self, total: Optional[None] = None) -> None:
+        self._create_directories()
 
+        num_symbols: int = total or len(self.symbols)
+        is_valid: List[bool] = [False] * len(self.symbols)
 
-# The triple with statement removes all logs to stderr
-with (
-    open(os.devnull, "w") as devnull,
-    redirect_stderr(devnull),
-    ThreadPoolExecutor(max_workers=32) as ex,
-):
-    futures: Dict = {ex.submit(process_symbol, i): i for i in range(total)}
-    for future in tqdm(as_completed(futures), total=total, file=sys.stdout):
-        i: int = futures[future]
-        try:
-            is_valid[i] = future.result()
-        except Exception:
-            is_valid[i] = False
+        # The triple with statement removes all logs to stderr
+        with (
+            open(os.devnull, "w") as devnull,
+            redirect_stderr(devnull),
+            ThreadPoolExecutor(max_workers=32) as ex,
+        ):
+            futures: Dict = {
+                ex.submit(self._process_symbol, i): i for i in range(num_symbols)
+            }
+            for future in tqdm(
+                as_completed(futures), total=num_symbols, file=sys.stdout
+            ):
+                i: int = futures[future]
+                try:
+                    is_valid[i] = future.result()
+                except Exception:
+                    is_valid[i] = False
 
-    num_downloaded: int = sum(is_valid)
-    print(
-        f"Total percentage of valid symbols downloaded: {(num_downloaded / total * 100) = :.3f}%"
-    )
+            num_downloaded: int = sum(is_valid)
+            print(
+                f"Total percentage of valid symbols downloaded: {(num_downloaded / num_symbols * 100) = :.3f}%"
+            )
 
-    valid_data: pl.DataFrame = cleaned_data.filter(is_valid)
-    valid_data.write_csv(f"{DATA_DIRECTORY}/symbols_valid_meta.csv")
+            valid_data: pl.DataFrame = self.cleaned_data.filter(is_valid)
+            valid_data.write_csv(f"{self.data_directory}/symbols_valid_meta.csv")
 
-# Python threads need to be shutdown, and it takes a while
-print("Cleaning up...")
+        # Python threads need to be shutdown, and it takes a while
+        print("Cleaning up...")

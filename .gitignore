@@ -1,6 +1,6 @@
 # Project stuff
 .venv/
-stock_market_dataset/
+nasdaq_dataset/
 __pycache__/
 
 # MacOS stuff
