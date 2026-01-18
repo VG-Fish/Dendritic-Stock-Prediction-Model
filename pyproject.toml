@@ -3,7 +3,7 @@ name = "dendritic-stock-prediction-model"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "kagglehub>=0.4.0",
     "matplotlib>=3.10.8",
