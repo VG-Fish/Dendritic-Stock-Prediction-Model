@@ -11,5 +11,6 @@ dependencies = [
     "polars>=1.37.1",
     "scikit-learn>=1.8.0",
     "torch>=2.9.1",
+    "tqdm>=4.67.1",
     "yfinance>=1.0",
 ]
