@@ -17,3 +17,4 @@ elif torch.cuda.is_available():
     device = torch.device("cuda")
 
 downloader: NASDAQDownloader = NASDAQDownloader()
+downloader.download_dataset()

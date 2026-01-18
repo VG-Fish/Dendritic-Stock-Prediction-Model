@@ -1,5 +1,6 @@
 # Code modified from https://www.kaggle.com/code/jacksoncrow/download-nasdaq-historical-data
 
+import logging
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,10 +12,13 @@ import polars as pl
 import yfinance as yf
 from tqdm import tqdm
 
+yf_logger: logging.Logger = logging.getLogger("yfinance")
+yf_logger.setLevel(logging.CRITICAL)
+
 
 class NASDAQDownloader:
     def __init__(self: Self, data_directory: str = "nasdaq_dataset") -> None:
-        self.data_directory = data_directory
+        self.data_directory: str = data_directory
 
         data: pl.DataFrame = pl.read_csv(
             "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
