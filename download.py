@@ -90,8 +90,8 @@ with (
         f"Total percentage of valid symbols downloaded: {(num_downloaded / total * 100) = :.3f}%"
     )
 
-valid_data: pl.DataFrame = cleaned_data.filter(is_valid)
-valid_data.write_csv(f"{DATA_DIRECTORY}/symbols_valid_meta.csv")
+    valid_data: pl.DataFrame = cleaned_data.filter(is_valid)
+    valid_data.write_csv(f"{DATA_DIRECTORY}/symbols_valid_meta.csv")
 
 # Python threads need to be shutdown, and it takes a while
 print("Cleaning up...")
