@@ -8,7 +8,6 @@ dependencies = [
     "kagglehub>=0.4.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.1",
-    "pandas>=2.3.3",
     "polars>=1.37.1",
     "scikit-learn>=1.8.0",
     "torch>=2.9.1",
