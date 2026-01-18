@@ -65,11 +65,9 @@ class NASDAQDownloader:
         stock_data: pl.DataFrame = pl.from_pandas(stock_data_pd)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
         etf_flag = self.cleaned_data[i]["ETF"][0]
-        match etf_flag:
-            case "Y":
-                stock_data.write_csv(f"{self.data_directory}/etfs/{symbol}.csv")
-            case "N":
-                stock_data.write_csv(f"{self.data_directory}/stocks/{symbol}.csv")
+        stock_data_path: str = f"{self.data_directory}/{'etfs' if etf_flag == 'Y' else 'stocks'}/{symbol}.csv"
+        if not os.path.exists(stock_data_path):
+            stock_data.write_csv(stock_data_path)
 
         return True
 
@@ -102,8 +100,9 @@ class NASDAQDownloader:
                 f"Total percentage of valid symbols downloaded: {(num_downloaded / num_symbols * 100) = :.3f}%"
             )
 
-            valid_data: pl.DataFrame = self.cleaned_data.filter(is_valid)
-            valid_data.write_csv(f"{self.data_directory}/symbols_valid_meta.csv")
+        self.cleaned_data.filter(is_valid).write_csv(
+            f"{self.data_directory}/symbols_valid_meta.csv"
+        )
 
         # Python threads need to be shutdown, and it takes a while
         print("Cleaning up...")
