@@ -26,12 +26,6 @@ class NASDAQDownloader:
         self.cleaned_data: pl.DataFrame = data.filter(pl.col("Test Issue") == "N")
         self.symbols: pl.Series = self.cleaned_data["Symbol"]
 
-    def _create_directories(self: Self) -> None:
-        if not os.path.exists(self.data_directory):
-            os.mkdir(self.data_directory)
-            os.mkdir(f"{self.data_directory}/stocks")
-            os.mkdir(f"{self.data_directory}/etfs")
-
     def _process_symbol(self: Self, i: int) -> bool:
         symbol: str = self.symbols[i]
         periods: List[str] = [
@@ -62,7 +56,13 @@ class NASDAQDownloader:
         if stock_data_pd is None or stock_data_pd.empty:
             return False
 
-        stock_data: pl.DataFrame = pl.from_pandas(stock_data_pd)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        # Removes ticker name from MultiIndex columns
+        if isinstance(stock_data_pd.columns, pd.MultiIndex):
+            stock_data_pd.columns = stock_data_pd.columns.get_level_values(0)
+
+        # This line ensures that the "Date" index gets saved as the "Date" index is turned into a column
+        stock_data_pd = stock_data_pd.reset_index()
+        stock_data = pl.from_pandas(stock_data_pd, include_index=True)
 
         etf_flag = self.cleaned_data[i]["ETF"][0]
         stock_data_path: str = f"{self.data_directory}/{'etfs' if etf_flag == 'Y' else 'stocks'}/{symbol}.csv"
@@ -71,8 +71,16 @@ class NASDAQDownloader:
 
         return True
 
-    def download_dataset(self: Self, total: Optional[None] = None) -> None:
-        self._create_directories()
+    def download_dataset(
+        self: Self,
+        stop_if_dest_dir_exists: bool = True,
+        total: Optional[None] = None,
+    ) -> None:
+        if stop_if_dest_dir_exists and os.path.exists(self.data_directory):
+            return
+
+        for directory in ("etfs", "stocks"):
+            os.makedirs(f"{self.data_directory}/{directory}", exist_ok=True)
 
         num_symbols: int = total or len(self.symbols)
         is_valid: List[bool] = [False] * len(self.symbols)
