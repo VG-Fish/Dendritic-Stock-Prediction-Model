@@ -14,6 +14,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 
 from download import NASDAQDatasetInfo, NASDAQDownloader
+from model import StockPredictionModel
 from stocks import StocksDataLoaders, StocksDataset
 
 # Initialize important variables
@@ -122,3 +123,9 @@ def create_datasets_from(
 data_loaders: StocksDataLoaders = create_datasets_from(
     dataset_directory_info.parent_directory / STOCKS_DATA_PATH
 )
+
+model: StockPredictionModel = StockPredictionModel(
+    input_dim=1, hidden_dim=32, num_layers=2, output_dim=1, device=device
+).to(device)
+criterion: nn.MSELoss = nn.MSELoss()
+optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
