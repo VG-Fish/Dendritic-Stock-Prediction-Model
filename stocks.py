@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Self, Tuple
 
-import polars as pl
+import numpy as np
 import torch
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
@@ -15,11 +15,11 @@ class StocksDataLoaders:
 
 
 class StocksDataset(Dataset):
-    def __init__(self: Self, stock_df: pl.DataFrame, device: torch.device):
-        self.sequences: torch.Tensor = torch.tensor(
-            stock_df["Sequence"], dtype=torch.float32
-        )
-        self.targets: torch.Tensor = torch.tensor(stock_df["Target"], torch.float32)
+    def __init__(self: Self, X: np.ndarray, y: np.ndarray) -> None:
+        # Convert numpy arrays to tensors once during initialization
+        # Use torch.from_numpy for efficiency
+        self.sequences = torch.from_numpy(X).to(torch.float32)
+        self.targets = torch.from_numpy(y).to(torch.float32)
 
     def __len__(self: Self) -> int:
         return self.sequences.shape[0]

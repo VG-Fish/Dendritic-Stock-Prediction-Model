@@ -17,20 +17,21 @@ from model import StockPredictionModel
 from stocks import StocksDataLoaders, StocksDataset
 
 # Initialize important variables
-RANDOM_SEED = 1290
-SEQUENCE_LENGTH = 60
-TRAIN_FRACTION = 0.8
-VAL_FRACTION = 0.1
-BATCH_SIZE = 256
-LEARNING_RATE = 0.001
-EPOCHS = 10
+RANDOM_SEED: int = 1290
+SEQUENCE_LENGTH: int = 60
+TRAIN_FRACTION: float = 0.8
+VAL_FRACTION: float = 0.1
+BATCH_SIZE: int = 256
+LEARNING_RATE: float = 0.001
+EPOCHS: int = 10
+MODEL_SAVE_DIR: Path = Path("model_info")
 
 torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
-if torch.mps.is_available():
-    device = torch.device("mps")
-elif torch.cuda.is_available():
+if torch.cuda.is_available():
     device = torch.device("cuda")
+elif torch.mps.is_available():
+    device = torch.device("mps")
 
 
 @dataclass
@@ -45,6 +46,12 @@ class ProcessedData:
 
 def make_windows_per_ticker(stock: pl.DataFrame) -> ProcessedData:
     stock = stock.sort("Date")
+    stock = stock.filter(pl.col("Close") > 0)
+
+    if len(stock) < SEQUENCE_LENGTH + 10:
+        empty_X: np.ndarray = np.empty((0, SEQUENCE_LENGTH - 1))
+        empty_y: np.ndarray = np.empty((0,))
+        return ProcessedData(empty_X, empty_y, empty_X, empty_y, empty_X, empty_y)
 
     prices: np.ndarray = stock["Close"].to_numpy()
     log_returns: np.ndarray = np.diff(np.log(prices))  # Calculates log return
@@ -53,10 +60,7 @@ def make_windows_per_ticker(stock: pl.DataFrame) -> ProcessedData:
     train_idx: int = int(TRAIN_FRACTION * n)
     val_idx: int = int((TRAIN_FRACTION + VAL_FRACTION) * n)
 
-    def windowing(data: np.ndarray):
-        if len(data) <= SEQUENCE_LENGTH:
-            return np.array([]), np.array([])
-
+    def windowing(data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         X, y = [], []
         for i in range(len(data) - SEQUENCE_LENGTH):
             X.append(data[i : i + SEQUENCE_LENGTH - 1])
@@ -75,7 +79,8 @@ def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
     all_val_X, all_val_y = [], []
     all_test_X, all_test_y = [], []
 
-    for file in tqdm(stocks_dir.glob("*.csv")):
+    files: List[Path] = list(stocks_dir.glob("*.csv"))
+    for file in tqdm(files, desc=f"Parsing {stocks_dir}"):
         df: pl.DataFrame = pl.read_csv(file).drop_nulls()
         # Ensures that model has enough context to learn something
         if len(df) < SEQUENCE_LENGTH + 10:
@@ -146,8 +151,8 @@ def train_step(
     for X_train, y_train in tqdm(
         train_loader, desc=f"Number of Batches Left for Epoch - {epoch}"
     ):
-        X_train = X_train.unsqueeze(-1)
-        y_train = y_train.unsqueeze(-1)
+        X_train = X_train.unsqueeze(-1).to(device)
+        y_train = y_train.unsqueeze(-1).to(device)
 
         y_train_pred: torch.Tensor = model(X_train)
         loss: torch.Tensor = criterion(y_train_pred, y_train)
@@ -159,7 +164,12 @@ def train_step(
     return train_loss
 
 
-def val_step(model: StockPredictionModel, val_loader: DataLoader, epoch: int) -> float:
+def val_step(
+    model: StockPredictionModel,
+    val_loader: DataLoader,
+    scaler: StandardScaler,
+    epoch: int,
+) -> float:
     model.eval()
     val_predictions: List = []
     val_targets: List = []
@@ -167,8 +177,8 @@ def val_step(model: StockPredictionModel, val_loader: DataLoader, epoch: int) ->
         for X_val, y_val in tqdm(
             val_loader, desc=f"Number of Val Batches Left for Epoch - {epoch}"
         ):
-            X_val = X_val.unsqueeze(-1)
-            y_val = y_val.unsqueeze(-1)
+            X_val = X_val.unsqueeze(-1).to(device)
+            y_val = y_val.unsqueeze(-1).to(device)
 
             y_val_pred: torch.Tensor = model(X_val)
 
@@ -188,7 +198,7 @@ def val_step(model: StockPredictionModel, val_loader: DataLoader, epoch: int) ->
     return val_rmse
 
 
-if __name__ == "__main__":
+def main() -> None:
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
 
@@ -209,5 +219,11 @@ if __name__ == "__main__":
         )
         all_losses.append(losses)
 
-        rsme: float = val_step(model, data_loaders.val, epoch)
+        rsme: float = val_step(model, data_loaders.val, scaler, epoch)
         all_rmse.append(rsme)
+
+        torch.save(model.state_dict(), MODEL_SAVE_DIR / "models" / f"model_{epoch}.pt")
+
+
+if __name__ == "__main__":
+    main()
