@@ -10,6 +10,7 @@ from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
+from tqdm import tqdm
 
 from download import NASDAQDatasetInfo, NASDAQDownloader
 from model import StockPredictionModel
@@ -19,6 +20,8 @@ from stocks import StocksDataLoaders, StocksDataset
 RANDOM_SEED: int = 1290
 SEQUENCE_LENGTH: int = 60
 STOCKS_DATA_PATH: str = "stocks_data.parquet"
+TRAIN_FRACTION: float = 0.8
+VAL_FRACTION: float = 0.1
 
 torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
@@ -32,13 +35,12 @@ dataset_directory_info: NASDAQDatasetInfo = downloader.download_dataset(
     stop_if_dest_dir_exists=True
 )
 stocks_directory: Path = dataset_directory_info.stocks_directory
+scaler: StandardScaler = StandardScaler()
 
 
 def make_windows(stock: pl.DataFrame) -> pl.DataFrame:
-    scaler: StandardScaler = StandardScaler()
-
     stock = stock.sort("Date")
-    close: np.ndarray = scaler.fit_transform(stock["Close"].reshape((-1, 1)))
+    close: np.ndarray = scaler.transform(stock["Close"].to_numpy().reshape(-1, 1))  # pyright: ignore[reportAssignmentType]
 
     if len(close) < SEQUENCE_LENGTH:
         return pl.DataFrame({"Sequence": [], "Target": []})
@@ -72,6 +74,10 @@ def save_stocks_dataset() -> None:
             .select("Date", "Close", "Ticker")
         )
 
+    raw_data: pl.DataFrame = pl.concat(lazy_frames).collect()
+    train_slice: pl.DataFrame = raw_data[: int(len(raw_data) * TRAIN_FRACTION)]
+    scaler.fit(train_slice["Close"].reshape((-1, 1)))
+
     stock_data: pl.DataFrame = (
         pl.concat(lazy_frames)
         .group_by("Ticker")
@@ -91,18 +97,18 @@ def save_stocks_dataset() -> None:
 
 
 def create_datasets_from(
-    path: Path, train_fraction: float = 0.8, val_fraction: float = 0.1
+    path: Path,
 ) -> StocksDataLoaders:
-    if train_fraction > 1.0:
+    if TRAIN_FRACTION > 1.0:
         raise ValueError("train_fraction must be < 1.0")
-    elif train_fraction + val_fraction > 1.0:
+    elif TRAIN_FRACTION + VAL_FRACTION > 1.0:
         raise ValueError("train_fraction + val_fraction must be < 1.0")
 
     stocks_data: pl.DataFrame = pl.read_parquet(path)
 
     num_data_points: int = len(stocks_data)
-    train_end_idx = int(train_fraction * num_data_points)
-    val_end_idx = int((train_fraction + val_fraction) * num_data_points)
+    train_end_idx = int(TRAIN_FRACTION * num_data_points)
+    val_end_idx = int((TRAIN_FRACTION + VAL_FRACTION) * num_data_points)
 
     train_dataset: Dataset = StocksDataset(stocks_data[:train_end_idx], device=device)
     train_dataloader: DataLoader = DataLoader(
@@ -132,13 +138,14 @@ optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
 
 num_epochs: int = 100
 
-for epoch in range(num_epochs):
-    for X_train, y_train in data_loaders.train:
+for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
+    model.train()
+    for X_train, y_train in tqdm(data_loaders.train, desc="Number of Batches Left"):
         X_train = X_train.unsqueeze(-1).to(device)
-        y_train = y_train.to(device)
+        y_train = y_train.unsqueeze(-1).to(device)
 
         y_train_pred: torch.Tensor = model(X_train)
-        loss = criterion(y_train_pred, y_train)
+        loss: torch.Tensor = criterion(y_train_pred, y_train)
 
         optimizer.zero_grad()
 
@@ -146,5 +153,26 @@ for epoch in range(num_epochs):
 
         optimizer.step()
 
-    # if epoch % 10 == 0:
-    #     print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}")
+    model.eval()
+    all_predictions: List = []
+    all_targets: List = []
+    with torch.no_grad():
+        for X_val, y_val in data_loaders.val:
+            X_val = X_val.unsqueeze(-1).to(device)
+            y_val = y_val.unsqueeze(-1).to(device)
+
+            y_val_pred = model(X_val)
+
+            all_predictions.append(y_val_pred.cpu())
+            all_targets.append(y_val.cpu().reshape((-1, 1)))
+
+    final_predictions_scaled: torch.Tensor = torch.vstack(all_predictions)
+    final_targets_scaled: torch.Tensor = torch.vstack(all_targets)
+
+    final_predictions: np.ndarray = scaler.inverse_transform(
+        final_predictions_scaled.numpy()
+    )
+    final_targets: np.ndarray = scaler.inverse_transform(final_targets_scaled.numpy())
+
+    val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
+    print(f"Epoch {epoch} | Val RMSE: ${val_rmse:.2f}")

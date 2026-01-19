@@ -42,7 +42,6 @@ class StockPredictionModel(nn.Module):
         )
 
         out, (_, _) = self.lstm(x, (h0.detach(), c0.detach()))
-        print(out[:, 1, :].shape)
-        out = self.fc(out[:, 1, :])
+        out = self.fc(out[:, -1, :])
 
         return out
