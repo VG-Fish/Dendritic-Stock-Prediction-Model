@@ -37,10 +37,14 @@ for file in stocks_directory.glob("*.csv"):
         .with_columns(
             [
                 pl.col("Date").dt.date(),
-                pl.col("Volume").cast(pl.Float64),
                 pl.lit(file.stem).alias("Ticker"),
             ]
         )
         .drop_nulls()
+        .select(["Date", "Close", "Ticker"])
     )
 stock_data: pl.DataFrame = pl.concat(lazy_frames).collect()
+print(stock_data.head())
+print(stock_data.columns)
+print(stock_data.describe())
+print(stock_data.schema)
