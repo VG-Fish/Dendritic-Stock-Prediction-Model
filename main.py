@@ -129,5 +129,5 @@ data_loaders: StocksDataLoaders = create_datasets_from(
 model: StockPredictionModel = StockPredictionModel(
     input_dim=1, hidden_dim=32, num_layers=2, output_dim=1, device=device
 ).to(device)
-criterion: nn.MSELoss = nn.MSELoss()
+criterion: nn.MSELoss = nn.MSELoss().to(device)
 optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
