@@ -1,8 +1,6 @@
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Self, Tuple
+from typing import Dict, List
 
-import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import torch
@@ -131,3 +129,22 @@ model: StockPredictionModel = StockPredictionModel(
 ).to(device)
 criterion: nn.MSELoss = nn.MSELoss().to(device)
 optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
+
+num_epochs: int = 100
+
+for epoch in range(num_epochs):
+    for X_train, y_train in data_loaders.train:
+        X_train = X_train.unsqueeze(-1).to(device)
+        y_train = y_train.to(device)
+
+        y_train_pred: torch.Tensor = model(X_train)
+        loss = criterion(y_train_pred, y_train)
+
+        optimizer.zero_grad()
+
+        loss.backward()
+
+        optimizer.step()
+
+    # if epoch % 10 == 0:
+    #     print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item():.4f}")
