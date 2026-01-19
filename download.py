@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Tuple
+from typing import Dict, List, Optional, Self
 
 import pandas as pd
 import polars as pl
