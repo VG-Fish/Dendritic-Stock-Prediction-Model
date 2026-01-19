@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import List, Tuple
 
 import numpy as np
 import polars as pl
@@ -9,7 +10,6 @@ import torch.optim as optim
 from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data.dataloader import DataLoader
-from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
 
 from download import NASDAQDatasetInfo, NASDAQDownloader
@@ -17,11 +17,13 @@ from model import StockPredictionModel
 from stocks import StocksDataLoaders, StocksDataset
 
 # Initialize important variables
-RANDOM_SEED: int = 1290
-SEQUENCE_LENGTH: int = 60
-STOCKS_DATA_PATH: str = "stocks_data.parquet"
-TRAIN_FRACTION: float = 0.8
-VAL_FRACTION: float = 0.1
+RANDOM_SEED = 1290
+SEQUENCE_LENGTH = 60
+TRAIN_FRACTION = 0.8
+VAL_FRACTION = 0.1
+BATCH_SIZE = 256
+LEARNING_RATE = 0.001
+EPOCHS = 10
 
 torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
@@ -30,162 +32,151 @@ if torch.mps.is_available():
 elif torch.cuda.is_available():
     device = torch.device("cuda")
 
-downloader: NASDAQDownloader = NASDAQDownloader()
-dataset_directory_info: NASDAQDatasetInfo = downloader.download_dataset(
-    stop_if_dest_dir_exists=True
-)
-stocks_directory: Path = dataset_directory_info.stocks_directory
-scaler: StandardScaler = StandardScaler()
+
+@dataclass
+class ProcessedData:
+    train_X: np.ndarray
+    train_y: np.ndarray
+    val_X: np.ndarray
+    val_y: np.ndarray
+    test_X: np.ndarray
+    test_y: np.ndarray
 
 
-def make_windows(stock: pl.DataFrame) -> pl.DataFrame:
+def make_windows_per_ticker(stock: pl.DataFrame) -> ProcessedData:
     stock = stock.sort("Date")
-    close: np.ndarray = scaler.transform(stock["Close"].to_numpy().reshape(-1, 1))  # pyright: ignore[reportAssignmentType]
 
-    if len(close) < SEQUENCE_LENGTH:
-        return pl.DataFrame({"Sequence": [], "Target": []})
+    prices: np.ndarray = stock["Close"].to_numpy()
+    log_returns: np.ndarray = np.diff(np.log(prices))  # Calculates log return
 
-    total_indices: int = len(close) - SEQUENCE_LENGTH
-    out: Dict = {
-        "Sequence": np.empty((total_indices, SEQUENCE_LENGTH - 1)),
-        "Target": np.empty(total_indices),
-    }
+    n: int = len(log_returns)
+    train_idx: int = int(TRAIN_FRACTION * n)
+    val_idx: int = int((TRAIN_FRACTION + VAL_FRACTION) * n)
 
-    for end in range(SEQUENCE_LENGTH, len(close)):
-        start: int = end - SEQUENCE_LENGTH
-        out["Sequence"][start] = close[start : end - 1, 0]
-        out["Target"][start] = close[end - 1, 0]
+    def windowing(data: np.ndarray):
+        if len(data) <= SEQUENCE_LENGTH:
+            return np.array([]), np.array([])
 
-    return pl.DataFrame(out)
+        X, y = [], []
+        for i in range(len(data) - SEQUENCE_LENGTH):
+            X.append(data[i : i + SEQUENCE_LENGTH - 1])
+            y.append(data[i + SEQUENCE_LENGTH - 1])
+        return np.array(X), np.array(y)
 
+    train_X, train_y = windowing(log_returns[:train_idx])
+    val_X, val_y = windowing(log_returns[train_idx:val_idx])
+    test_X, test_y = windowing(log_returns[val_idx:])
 
-def save_stocks_dataset() -> None:
-    lazy_frames: List[pl.LazyFrame] = []
-    for file in stocks_directory.glob("*.csv"):
-        lazy_frames.append(
-            pl.scan_csv(file, try_parse_dates=True)
-            .with_columns(
-                [
-                    pl.col("Date").dt.date(),
-                    pl.lit(file.stem).alias("Ticker"),
-                ]
-            )
-            .drop_nulls()
-            .select("Date", "Close", "Ticker")
-        )
-
-    raw_data: pl.DataFrame = pl.concat(lazy_frames).collect()
-    train_slice: pl.DataFrame = raw_data[: int(len(raw_data) * TRAIN_FRACTION)]
-    scaler.fit(train_slice["Close"].reshape((-1, 1)))
-
-    stock_data: pl.DataFrame = (
-        pl.concat(lazy_frames)
-        .group_by("Ticker")
-        .map_groups(
-            make_windows,
-            schema={
-                "Sequence": pl.List(pl.Float64),
-                "Target": pl.Float64,
-            },
-        )
-    ).collect()
-
-    stock_data.write_parquet(dataset_directory_info.parent_directory / STOCKS_DATA_PATH)
+    return ProcessedData(train_X, train_y, val_X, val_y, test_X, test_y)
 
 
-# save_stocks_dataset()
+def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
+    all_train_X, all_train_y = [], []
+    all_val_X, all_val_y = [], []
+    all_test_X, all_test_y = [], []
 
+    for file in tqdm(stocks_dir.glob("*.csv")):
+        df: pl.DataFrame = pl.read_csv(file).drop_nulls()
+        # Ensures that model has enough context to learn something
+        if len(df) < SEQUENCE_LENGTH + 10:
+            continue
 
-def create_datasets_from(
-    path: Path,
-) -> StocksDataLoaders:
-    if TRAIN_FRACTION > 1.0:
-        raise ValueError("train_fraction must be < 1.0")
-    elif TRAIN_FRACTION + VAL_FRACTION > 1.0:
-        raise ValueError("train_fraction + val_fraction must be < 1.0")
+        processed_data: ProcessedData = make_windows_per_ticker(df)
 
-    stocks_data: pl.DataFrame = pl.read_parquet(path)
+        if processed_data.train_X.size > 0:
+            all_train_X.append(processed_data.train_X)
+            all_train_y.append(processed_data.train_y)
+        if processed_data.val_X.size > 0:
+            all_val_X.append(processed_data.val_X)
+            all_val_y.append(processed_data.val_y)
+        if processed_data.test_X.size > 0:
+            all_test_X.append(processed_data.test_X)
+            all_test_y.append(processed_data.test_y)
 
-    num_data_points: int = len(stocks_data)
-    train_end_idx = int(TRAIN_FRACTION * num_data_points)
-    val_end_idx = int((TRAIN_FRACTION + VAL_FRACTION) * num_data_points)
+    train_X: np.ndarray = np.vstack(all_train_X)
+    train_y: np.ndarray = np.concatenate(all_train_y)
 
-    batch_size: int = 256
-    train_dataset: Dataset = StocksDataset(stocks_data[:train_end_idx], device=device)
-    train_dataloader: DataLoader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
+    val_X: np.ndarray = np.vstack(all_val_X)
+    val_y: np.ndarray = np.concatenate(all_val_y)
+
+    test_X: np.ndarray = np.vstack(all_test_X)
+    test_y: np.ndarray = np.concatenate(all_test_y)
+
+    scaler: StandardScaler = StandardScaler()
+    # Flatten to scale, then reshape back
+    train_X_shape: Tuple = train_X.shape
+    train_X = scaler.fit_transform(train_X.reshape(-1, 1)).reshape(train_X_shape)
+
+    val_X_shape: Tuple = val_X.shape
+    val_X = scaler.transform(val_X.reshape(-1, 1)).reshape(val_X_shape)  # pyright: ignore[reportAttributeAccessIssue]
+
+    test_X_shape: Tuple = test_X.shape
+    test_X = scaler.transform(test_X.reshape(-1, 1)).reshape(test_X_shape)  # pyright: ignore[reportAttributeAccessIssue]
+
+    # Scale targets
+    train_y = scaler.transform(train_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
+    val_y = scaler.transform(val_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
+    test_y = scaler.transform(test_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
+
+    train_loader: DataLoader = DataLoader(
+        StocksDataset(train_X, train_y),  # pyright: ignore[reportArgumentType]
+        batch_size=BATCH_SIZE,
         shuffle=True,
-        persistent_workers=True,
     )
-
-    val_dataset: Dataset = StocksDataset(
-        stocks_data[train_end_idx:val_end_idx], device=device
+    val_loader: DataLoader = DataLoader(
+        StocksDataset(val_X, val_y),  # pyright: ignore[reportArgumentType]
+        batch_size=BATCH_SIZE,
     )
-    val_dataloader: DataLoader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        persistent_workers=True,
+    test_loader: DataLoader = DataLoader(
+        StocksDataset(test_X, test_y),  # pyright: ignore[reportArgumentType]
+        batch_size=BATCH_SIZE,
     )
-
-    test_dataset: Dataset = StocksDataset(stocks_data[val_end_idx:], device=device)
-    test_dataloader: DataLoader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        persistent_workers=True,
-    )
-
-    return StocksDataLoaders(train_dataloader, val_dataloader, test_dataloader)
+    return StocksDataLoaders(train_loader, val_loader, test_loader), scaler
 
 
-data_loaders: StocksDataLoaders = create_datasets_from(
-    dataset_directory_info.parent_directory / STOCKS_DATA_PATH
-)
-
-model: StockPredictionModel = StockPredictionModel(
-    input_dim=1, hidden_dim=32, num_layers=2, output_dim=1, device=device
-).to(device)
-criterion: nn.MSELoss = nn.MSELoss().to(device)
-optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
-
-num_epochs: int = 100
-
-for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
+def train_step(
+    model: StockPredictionModel,
+    train_loader: DataLoader,
+    criterion: nn.MSELoss,
+    optimizer: optim.Adam,
+    epoch: int,
+) -> float:
     model.train()
-    for X_train, y_train in tqdm(data_loaders.train, desc="Number of Batches Left"):
-        X_train = X_train.unsqueeze(-1).to(device)
-        y_train = y_train.unsqueeze(-1).to(device)
+    train_loss: float = 0
+    for X_train, y_train in tqdm(
+        train_loader, desc=f"Number of Batches Left for Epoch - {epoch}"
+    ):
+        X_train = X_train.unsqueeze(-1)
+        y_train = y_train.unsqueeze(-1)
 
         y_train_pred: torch.Tensor = model(X_train)
         loss: torch.Tensor = criterion(y_train_pred, y_train)
+        train_loss += loss.item()
 
         optimizer.zero_grad()
-
         loss.backward()
-
         optimizer.step()
+    return train_loss
 
-        torch.mps.empty_cache()
 
+def val_step(model: StockPredictionModel, val_loader: DataLoader, epoch: int) -> float:
     model.eval()
-    all_predictions: List = []
-    all_targets: List = []
+    val_predictions: List = []
+    val_targets: List = []
     with torch.no_grad():
-        for X_val, y_val in data_loaders.val:
-            X_val = X_val.unsqueeze(-1).to(device)
-            y_val = y_val.unsqueeze(-1).to(device)
+        for X_val, y_val in tqdm(
+            val_loader, desc=f"Number of Val Batches Left for Epoch - {epoch}"
+        ):
+            X_val = X_val.unsqueeze(-1)
+            y_val = y_val.unsqueeze(-1)
 
-            y_val_pred = model(X_val)
+            y_val_pred: torch.Tensor = model(X_val)
 
-            all_predictions.append(y_val_pred.cpu())
-            all_targets.append(y_val.cpu().reshape((-1, 1)))
+            val_predictions.append(y_val_pred.cpu())
+            val_targets.append(y_val.cpu().reshape((-1, 1)))
 
-            torch.mps.empty_cache()
-
-    final_predictions_scaled: torch.Tensor = torch.vstack(all_predictions)
-    final_targets_scaled: torch.Tensor = torch.vstack(all_targets)
+    final_predictions_scaled: torch.Tensor = torch.vstack(val_predictions)
+    final_targets_scaled: torch.Tensor = torch.vstack(val_targets)
 
     final_predictions: np.ndarray = scaler.inverse_transform(
         final_predictions_scaled.numpy()
@@ -193,4 +184,30 @@ for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
     final_targets: np.ndarray = scaler.inverse_transform(final_targets_scaled.numpy())
 
     val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
-    print(f"Epoch {epoch} | Val RMSE: ${val_rmse:.2f}")
+
+    return val_rmse
+
+
+if __name__ == "__main__":
+    downloader: NASDAQDownloader = NASDAQDownloader()
+    info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
+
+    data_loaders, scaler = prepare_data(info.stocks_directory)
+
+    model: StockPredictionModel = StockPredictionModel(
+        input_dim=1, hidden_dim=32, num_layers=2, output_dim=1, device=device
+    ).to(device)
+    criterion: nn.MSELoss = nn.MSELoss().to(device)
+    optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
+
+    num_epochs: int = 10
+    all_losses: List[float] = []
+    all_rmse: List[float] = []
+    for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
+        losses: float = train_step(
+            model, data_loaders.train, criterion, optimizer, epoch
+        )
+        all_losses.append(losses)
+
+        rsme: float = val_step(model, data_loaders.val, epoch)
+        all_rmse.append(rsme)

@@ -111,7 +111,10 @@ class NASDAQDownloader:
                 ex.submit(self._process_symbol, i): i for i in range(num_symbols)
             }
             for future in tqdm(
-                as_completed(futures), total=num_symbols, file=sys.stdout
+                as_completed(futures),
+                total=num_symbols,
+                file=sys.stdout,
+                desc="Downloading Dataset...",
             ):
                 i: int = futures[future]
                 try:
