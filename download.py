@@ -5,7 +5,9 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr
-from typing import Dict, List, Optional, Self
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Self, Tuple
 
 import pandas as pd
 import polars as pl
@@ -16,9 +18,23 @@ yf_logger: logging.Logger = logging.getLogger("yfinance")
 yf_logger.setLevel(logging.CRITICAL)
 
 
+@dataclass
+class NASDAQDatasetInfo:
+    parent_directory: Path
+    stocks_directory: Path
+    etfs_directory: Path
+    valid_tickers_metadata: Path
+
+
 class NASDAQDownloader:
     def __init__(self: Self, data_directory: str = "nasdaq_dataset") -> None:
-        self.data_directory: str = data_directory
+        self.data_directory: Path = Path(data_directory)
+        self._dataset_info: NASDAQDatasetInfo = NASDAQDatasetInfo(
+            self.data_directory,
+            self.data_directory / "stocks",
+            self.data_directory / "etfs",
+            self.data_directory / "symbols_valid_meta.csv",
+        )
 
         data: pl.DataFrame = pl.read_csv(
             "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
@@ -75,12 +91,12 @@ class NASDAQDownloader:
         self: Self,
         stop_if_dest_dir_exists: bool = True,
         total: Optional[None] = None,
-    ) -> None:
+    ) -> NASDAQDatasetInfo:
         if stop_if_dest_dir_exists and os.path.exists(self.data_directory):
-            return
+            return self._dataset_info
 
-        for directory in ("etfs", "stocks"):
-            os.makedirs(f"{self.data_directory}/{directory}", exist_ok=True)
+        os.makedirs(self._dataset_info.stocks_directory, exist_ok=True)
+        os.makedirs(self._dataset_info.etfs_directory, exist_ok=True)
 
         num_symbols: int = total or len(self.symbols)
         is_valid: List[bool] = [False] * len(self.symbols)
@@ -109,8 +125,9 @@ class NASDAQDownloader:
             )
 
         self.cleaned_data.filter(is_valid).write_csv(
-            f"{self.data_directory}/symbols_valid_meta.csv"
+            self._dataset_info.valid_tickers_metadata
         )
 
         # Python threads need to be shutdown, and it takes a while
         print("Cleaning up...")
+        return self._dataset_info
