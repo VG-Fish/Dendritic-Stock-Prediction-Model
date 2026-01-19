@@ -106,15 +106,17 @@ def create_datasets_from(
     train_end_idx = int(train_fraction * num_data_points)
     val_end_idx = int((train_fraction + val_fraction) * num_data_points)
 
-    train_dataset: Dataset = StocksDataset(stocks_data[:train_end_idx])
+    train_dataset: Dataset = StocksDataset(stocks_data[:train_end_idx], device=device)
     train_dataloader: DataLoader = DataLoader(
         train_dataset, batch_size=64, shuffle=True
     )
 
-    val_dataset: Dataset = StocksDataset(stocks_data[train_end_idx:val_end_idx])
+    val_dataset: Dataset = StocksDataset(
+        stocks_data[train_end_idx:val_end_idx], device=device
+    )
     val_dataloader: DataLoader = DataLoader(val_dataset, batch_size=64, shuffle=True)
 
-    test_dataset: Dataset = StocksDataset(stocks_data[val_end_idx:])
+    test_dataset: Dataset = StocksDataset(stocks_data[val_end_idx:], device=device)
     test_dataloader: DataLoader = DataLoader(test_dataset, batch_size=64, shuffle=True)
 
     return StocksDataLoaders(train_dataloader, val_dataloader, test_dataloader)
