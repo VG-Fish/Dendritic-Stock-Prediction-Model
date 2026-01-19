@@ -1,5 +1,6 @@
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Self, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,7 +17,10 @@ from download import NASDAQDatasetInfo, NASDAQDownloader
 
 # Initialize important variables
 RANDOM_SEED: int = 1290
+SEQUENCE_LENGTH: int = 60
+STOCKS_DATA_PATH: str = "stocks_data.parquet"
 
+torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
 if torch.mps.is_available():
     device = torch.device("mps")
@@ -29,8 +33,6 @@ dataset_directory_info: NASDAQDatasetInfo = downloader.download_dataset(
 )
 stocks_directory: Path = dataset_directory_info.stocks_directory
 
-SEQUENCE_LENGTH: int = 60
-
 
 def make_windows(stock: pl.DataFrame) -> pl.DataFrame:
     scaler: StandardScaler = StandardScaler()
@@ -38,28 +40,21 @@ def make_windows(stock: pl.DataFrame) -> pl.DataFrame:
     stock = stock.sort("Date")
     close: np.ndarray = scaler.fit_transform(stock["Close"].reshape((-1, 1)))
 
-    # Ignore cases where there's less values than SEQUENCE_LENGTH
     if len(close) < SEQUENCE_LENGTH:
-        return pl.DataFrame(
-            {"Ticker": [], "Sequence": [], "Sequence Dates": [], "Target": []}
-        )
+        return pl.DataFrame({"Sequence": [], "Target": []})
 
     total_indices: int = len(close) - SEQUENCE_LENGTH
     out: Dict = {
-        "Ticker": np.repeat(stock["Ticker"][0], total_indices),
         "Sequence": np.empty((total_indices, SEQUENCE_LENGTH - 1)),
-        "Sequence Dates": [],  # Using a Python list because funky stuff happens when converting polars Dates to numpy
         "Target": np.empty(total_indices),
     }
+
     for end in range(SEQUENCE_LENGTH, len(close)):
         start: int = end - SEQUENCE_LENGTH
         out["Sequence"][start] = close[start : end - 1, 0]
-        out["Sequence Dates"].append(stock["Date"][start : end - 1])
         out["Target"][start] = close[end - 1, 0]
+
     return pl.DataFrame(out)
-
-
-STOCKS_DATA_PATH: str = "stocks_data.parquet"
 
 
 def save_stocks_dataset() -> None:
@@ -74,7 +69,7 @@ def save_stocks_dataset() -> None:
                 ]
             )
             .drop_nulls()
-            .select(["Date", "Close", "Ticker"])
+            .select("Date", "Close", "Ticker")
         )
 
     stock_data: pl.DataFrame = (
@@ -83,60 +78,68 @@ def save_stocks_dataset() -> None:
         .map_groups(
             make_windows,
             schema={
-                "Ticker": pl.String,
                 "Sequence": pl.List(pl.Float64),
-                "Sequence Dates": pl.List(pl.Date),
                 "Target": pl.Float64,
             },
         )
     ).collect()
+
     stock_data.write_parquet(dataset_directory_info.parent_directory / STOCKS_DATA_PATH)
 
 
-save_stocks_dataset()
+# save_stocks_dataset()
 
 
-def create_dataset_from(
+class StocksDataset(Dataset):
+    def __init__(self: Self, stock_df: pl.DataFrame):
+        X: np.ndarray = stock_df["Sequence"].to_numpy().astype(np.float32)
+        y: np.ndarray = stock_df["Target"].to_numpy().astype(np.float32)
+
+        self.X: torch.Tensor = torch.from_numpy(X)
+        self.y: torch.Tensor = torch.from_numpy(y)
+
+    def __len__(self: Self) -> int:
+        return self.X.shape[0]
+
+    def __getitem__(self: Self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.X[idx], self.y[idx]
+
+
+@dataclass
+class StocksDataLoaders:
+    train: DataLoader
+    val: DataLoader
+    test: DataLoader
+
+
+def create_datasets_from(
     path: Path, train_fraction: float = 0.8, val_fraction: float = 0.1
-) -> pl.DataFrame:
+) -> StocksDataLoaders:
+    if train_fraction > 1.0:
+        raise ValueError("train_fraction must be < 1.0")
+    elif train_fraction + val_fraction > 1.0:
+        raise ValueError("train_fraction + val_fraction must be < 1.0")
+
     stocks_data: pl.DataFrame = pl.read_parquet(path)
-    print(stocks_data.head())
-    # unique_dates = stocks_data.select("Date").unique().sort("Date").to_series()
 
-    # num_dates = len(unique_dates)
-    # if train_fraction > 1.0:
-    #     raise ValueError("train_fraction must be < 1.0")
-    # elif train_fraction + val_fraction > 1.0:
-    #     raise ValueError("train_fraction + val_fraction must be < 1.0")
+    num_data_points: int = len(stocks_data)
+    train_end_idx = int(train_fraction * num_data_points)
+    val_end_idx = int((train_fraction + val_fraction) * num_data_points)
 
-    # train_end_idx = int(train_fraction * num_dates)
-    # val_end_idx = int((train_fraction + val_fraction) * num_dates)
+    train_dataset: Dataset = StocksDataset(stocks_data[:train_end_idx])
+    train_dataloader: DataLoader = DataLoader(
+        train_dataset, batch_size=64, shuffle=True
+    )
 
-    # train_last_date = unique_dates[train_end_idx - 1]
-    # val_last_date = unique_dates[val_end_idx - 1]
+    val_dataset: Dataset = StocksDataset(stocks_data[train_end_idx:val_end_idx])
+    val_dataloader: DataLoader = DataLoader(val_dataset, batch_size=64, shuffle=True)
 
-    # train_dataset: Dataset = stocks_data.filter(
-    #     pl.col("Date") <= train_last_date
-    # ).to_torch(return_type="dataset")
-    # print(train_dataset.schema)
-    # train_dataloader: DataLoader = DataLoader(
-    #     train_dataset, batch_size=64, shuffle=True
-    # )
+    test_dataset: Dataset = StocksDataset(stocks_data[val_end_idx:])
+    test_dataloader: DataLoader = DataLoader(test_dataset, batch_size=64, shuffle=True)
 
-    # val_dataset: Dataset = stocks_data.filter(
-    #     (pl.col("Date") > train_last_date) & (pl.col("Date") <= val_last_date)
-    # ).to_torch(return_type="dataset")
-    # val_dataloader: DataLoader = DataLoader(val_dataset, batch_size=64, shuffle=True)
-
-    # test_dataset: Dataset = stocks_data.filter(pl.col("Date") > val_last_date).to_torch(
-    #     return_type="dataset"
-    # )
-    # test_dataloader: DataLoader = DataLoader(test_dataset, batch_size=64, shuffle=True)
-
-    return stocks_data
+    return StocksDataLoaders(train_dataloader, val_dataloader, test_dataloader)
 
 
-stocks_data: pl.DataFrame = create_dataset_from(
+data_loaders: StocksDataLoaders = create_datasets_from(
     dataset_directory_info.parent_directory / STOCKS_DATA_PATH
 )
-print(stocks_data.head())
