@@ -113,19 +113,28 @@ def create_datasets_from(
     batch_size: int = 256
     train_dataset: Dataset = StocksDataset(stocks_data[:train_end_idx], device=device)
     train_dataloader: DataLoader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        persistent_workers=True,
     )
 
     val_dataset: Dataset = StocksDataset(
         stocks_data[train_end_idx:val_end_idx], device=device
     )
     val_dataloader: DataLoader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=True
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        persistent_workers=True,
     )
 
     test_dataset: Dataset = StocksDataset(stocks_data[val_end_idx:], device=device)
     test_dataloader: DataLoader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=True
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        persistent_workers=True,
     )
 
     return StocksDataLoaders(train_dataloader, val_dataloader, test_dataloader)
@@ -158,6 +167,8 @@ for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
 
         optimizer.step()
 
+        torch.mps.empty_cache()
+
     model.eval()
     all_predictions: List = []
     all_targets: List = []
@@ -170,6 +181,8 @@ for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
 
             all_predictions.append(y_val_pred.cpu())
             all_targets.append(y_val.cpu().reshape((-1, 1)))
+
+            torch.mps.empty_cache()
 
     final_predictions_scaled: torch.Tensor = torch.vstack(all_predictions)
     final_targets_scaled: torch.Tensor = torch.vstack(all_targets)
