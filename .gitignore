@@ -2,6 +2,7 @@
 .venv/
 nasdaq_dataset/
 __pycache__/
+*.pt
 
 # MacOS stuff
 .DS_Store

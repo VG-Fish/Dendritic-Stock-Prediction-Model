@@ -1,6 +1,8 @@
+import argparse
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 import numpy as np
 import polars as pl
@@ -24,7 +26,11 @@ VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.001
 EPOCHS: int = 10
-MODEL_SAVE_DIR: Path = Path("model_info")
+MODEL_INFO_DIR: Path = Path("model_info")
+
+# ANSI escape codes
+RED: str = "\033[31m"
+RESET: str = "\033[0m"
 
 torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
@@ -198,7 +204,29 @@ def val_step(
     return val_rmse
 
 
+def float_in_range(low: float, high: float) -> Callable:
+    def checker(value: str) -> float:
+        try:
+            f_value = float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"{RED}'{value}' is not a valid float.{RESET}"
+            )
+
+        f_value = float(value)
+        if f_value < low or f_value >= high:
+            raise argparse.ArgumentTypeError(
+                f"{RED}Value must be in [{low}, {high}){RESET}"
+            )
+        return f_value
+
+    return checker
+
+
 def main() -> None:
+    model_save_dir: Path = MODEL_INFO_DIR / "models"
+    os.makedirs(model_save_dir, exist_ok=True)
+
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
 
@@ -210,10 +238,9 @@ def main() -> None:
     criterion: nn.MSELoss = nn.MSELoss().to(device)
     optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
 
-    num_epochs: int = 10
     all_losses: List[float] = []
     all_rmse: List[float] = []
-    for epoch in tqdm(range(num_epochs), desc="Number of Epochs Left"):
+    for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
         losses: float = train_step(
             model, data_loaders.train, criterion, optimizer, epoch
         )
@@ -222,8 +249,76 @@ def main() -> None:
         rsme: float = val_step(model, data_loaders.val, scaler, epoch)
         all_rmse.append(rsme)
 
-        torch.save(model.state_dict(), MODEL_SAVE_DIR / "models" / f"model_{epoch}.pt")
+        torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
 
 if __name__ == "__main__":
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
+        prog="Dendritic LSTM Stock Prediction Model",
+        description="This program trains a Dendritic LSTM Stock Prediction Model on data from thousands of companies from the NASDAQ.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--random_seed", help="Set the random seed.", type=int, default=RANDOM_SEED
+    )
+    parser.add_argument(
+        "--sequence_length",
+        help="How many days the model should consider to predict the price for the next day.",
+        type=int,
+        default=SEQUENCE_LENGTH,
+    )
+    parser.add_argument(
+        "--train_fraction",
+        help="How big the training dataset should be. This parameter should be in [0, 1).",
+        type=float_in_range(0.0, 1.0),
+        default=TRAIN_FRACTION,
+    )
+    parser.add_argument(
+        "--val_fraction",
+        help="How big the validation dataset should be. This parameter should be in [0, 1).",
+        type=float_in_range(0.0, 1.0),
+        default=VAL_FRACTION,
+    )
+    parser.add_argument(
+        "--batch_size",
+        help="How big each batch size should be. This parameter should ideally be a power of 2.",
+        type=int,
+        default=BATCH_SIZE,
+    )
+    parser.add_argument(
+        "--learning_rate",
+        help="The model learning rate.",
+        type=float,
+        default=LEARNING_RATE,
+    )
+    parser.add_argument(
+        "--epochs",
+        help="The number of epochs.",
+        type=int,
+        default=EPOCHS,
+    )
+    parser.add_argument(
+        "--model_info_dir",
+        help="The directory to save all model related stuff to.",
+        type=str,
+        default=MODEL_INFO_DIR,
+    )
+    args: argparse.Namespace = parser.parse_args()
+
+    if args.train_fraction + args.val_fraction >= 1.0:
+        parser.error(
+            f"{RED}The sum of --train_fraction ({args.train_fraction}) and "
+            f"--val_fraction ({args.val_fraction}) must be less than 1.0 "
+            f"to leave room for the test set.{RESET}"
+        )
+
+    RANDOM_SEED = args.random_seed
+    SEQUENCE_LENGTH = args.sequence_length
+    TRAIN_FRACTION = args.train_fraction
+    VAL_FRACTION = args.val_fraction
+    BATCH_SIZE = args.batch_size
+    LEARNING_RATE = args.learning_rate
+    EPOCHS = args.epochs
+    MODEL_INFO_DIR = args.model_info_dir
+
     main()
