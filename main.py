@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,8 +24,23 @@ downloader: NASDAQDownloader = NASDAQDownloader()
 dataset_directory_info: NASDAQDatasetInfo = downloader.download_dataset(
     stop_if_dest_dir_exists=True
 )
+stocks_directory: Path = dataset_directory_info.stocks_directory
 
 scaler: StandardScaler = StandardScaler()
 
 SEQUENCE_LENGTH: int = 60
-print(dataset_directory_info)
+
+lazy_frames: List[pl.LazyFrame] = []
+for file in stocks_directory.glob("*.csv"):
+    lazy_frames.append(
+        pl.scan_csv(file, try_parse_dates=True)
+        .with_columns(
+            [
+                pl.col("Date").dt.date(),
+                pl.col("Volume").cast(pl.Float64),
+                pl.lit(file.stem).alias("Ticker"),
+            ]
+        )
+        .drop_nulls()
+    )
+stock_data: pl.DataFrame = pl.concat(lazy_frames).collect()
