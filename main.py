@@ -4,13 +4,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Tuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from matplotlib.axes import Axes
 from sklearn.metrics import root_mean_squared_error
 from sklearn.preprocessing import StandardScaler
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
@@ -114,9 +117,13 @@ def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
     test_y: np.ndarray = np.concatenate(all_test_y)
 
     scaler: StandardScaler = StandardScaler()
+    # Scaler fits only on the training targets
+    train_y_raw: np.ndarray = train_y.reshape(-1, 1)
+    scaler.fit(train_y_raw)
+
     # Flatten to scale, then reshape back
     train_X_shape: Tuple = train_X.shape
-    train_X = scaler.fit_transform(train_X.reshape(-1, 1)).reshape(train_X_shape)
+    train_X = scaler.transform(train_X.reshape(-1, 1)).reshape(train_X_shape)  # pyright: ignore[reportAttributeAccessIssue]
 
     val_X_shape: Tuple = val_X.shape
     val_X = scaler.transform(val_X.reshape(-1, 1)).reshape(val_X_shape)  # pyright: ignore[reportAttributeAccessIssue]
@@ -125,7 +132,7 @@ def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
     test_X = scaler.transform(test_X.reshape(-1, 1)).reshape(test_X_shape)  # pyright: ignore[reportAttributeAccessIssue]
 
     # Scale targets
-    train_y = scaler.transform(train_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
+    train_y = scaler.transform(train_y_raw).flatten()  # pyright: ignore[reportAttributeAccessIssue]
     val_y = scaler.transform(val_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
     test_y = scaler.transform(test_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -167,13 +174,14 @@ def train_step(
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-    return train_loss
+    return train_loss / len(train_loader)
 
 
 def val_step(
     model: StockPredictionModel,
     val_loader: DataLoader,
     scaler: StandardScaler,
+    scheduler: ReduceLROnPlateau,
     epoch: int,
 ) -> float:
     model.eval()
@@ -184,12 +192,11 @@ def val_step(
             val_loader, desc=f"Number of Val Batches Left for Epoch - {epoch}"
         ):
             X_val = X_val.unsqueeze(-1).to(device)
-            y_val = y_val.unsqueeze(-1).to(device)
 
             y_val_pred: torch.Tensor = model(X_val)
 
             val_predictions.append(y_val_pred.cpu())
-            val_targets.append(y_val.cpu().reshape((-1, 1)))
+            val_targets.append(y_val)
 
     final_predictions_scaled: torch.Tensor = torch.vstack(val_predictions)
     final_targets_scaled: torch.Tensor = torch.vstack(val_targets)
@@ -201,7 +208,68 @@ def val_step(
 
     val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
 
+    scheduler.step(val_rmse)
+
     return val_rmse
+
+
+def plot_model_performance(all_losses: List[float], all_rsme: List[float]) -> None:
+    print("Saving model performance...")
+
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    color = "tab:blue"
+    ax1.set_xlabel("Epochs")
+    ax1.set_ylabel("Training Loss (MSE)", color=color)
+    ax1.plot(all_losses, color=color, label="Train Loss")
+    ax1.tick_params(axis="y", labelcolor=color)
+
+    ax2: Axes = ax1.twinx()
+    color = "tab:red"
+    ax2.set_ylabel("Val RMSE (Log Returns)", color=color)
+    ax2.plot(all_rsme, color=color, label="Val RMSE")
+    ax2.tick_params(axis="y", labelcolor=color)
+
+    plt.title("Model Performance Over Epochs")
+    fig.tight_layout()
+    plt.show()
+
+
+def main() -> None:
+    model_save_dir: Path = MODEL_INFO_DIR / "models"
+    os.makedirs(model_save_dir, exist_ok=True)
+
+    downloader: NASDAQDownloader = NASDAQDownloader()
+    info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
+
+    data_loaders, scaler = prepare_data(info.stocks_directory)
+
+    model: StockPredictionModel = StockPredictionModel(
+        input_dim=1, hidden_dim=32, num_layers=2, output_dim=1, device=device
+    ).to(device)
+    criterion: nn.MSELoss = nn.MSELoss().to(device)
+    optimizer: optim.Adam = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=5,
+    )
+
+    all_losses: List[float] = []
+    all_rmse: List[float] = []
+    for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
+        losses: float = train_step(
+            model, data_loaders.train, criterion, optimizer, epoch
+        )
+        all_losses.append(losses)
+
+        rsme: float = val_step(model, data_loaders.val, scaler, scheduler, epoch)
+        all_rmse.append(rsme)
+
+        torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
+    plot_model_performance(all_losses, all_rmse)
+    print("Model training complete!")
 
 
 def float_in_range(low: float, high: float) -> Callable:
@@ -221,35 +289,6 @@ def float_in_range(low: float, high: float) -> Callable:
         return f_value
 
     return checker
-
-
-def main() -> None:
-    model_save_dir: Path = MODEL_INFO_DIR / "models"
-    os.makedirs(model_save_dir, exist_ok=True)
-
-    downloader: NASDAQDownloader = NASDAQDownloader()
-    info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
-
-    data_loaders, scaler = prepare_data(info.stocks_directory)
-
-    model: StockPredictionModel = StockPredictionModel(
-        input_dim=1, hidden_dim=32, num_layers=2, output_dim=1, device=device
-    ).to(device)
-    criterion: nn.MSELoss = nn.MSELoss().to(device)
-    optimizer: optim.Adam = optim.Adam(model.parameters(), lr=0.01)
-
-    all_losses: List[float] = []
-    all_rmse: List[float] = []
-    for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
-        losses: float = train_step(
-            model, data_loaders.train, criterion, optimizer, epoch
-        )
-        all_losses.append(losses)
-
-        rsme: float = val_step(model, data_loaders.val, scaler, epoch)
-        all_rmse.append(rsme)
-
-        torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
 
 if __name__ == "__main__":
