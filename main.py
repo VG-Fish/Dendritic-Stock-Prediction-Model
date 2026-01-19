@@ -137,16 +137,16 @@ def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
     test_y = scaler.transform(test_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
 
     train_loader: DataLoader = DataLoader(
-        StocksDataset(train_X, train_y),  # pyright: ignore[reportArgumentType]
+        StocksDataset(train_X, train_y),
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
     val_loader: DataLoader = DataLoader(
-        StocksDataset(val_X, val_y),  # pyright: ignore[reportArgumentType]
+        StocksDataset(val_X, val_y),
         batch_size=BATCH_SIZE,
     )
     test_loader: DataLoader = DataLoader(
-        StocksDataset(test_X, test_y),  # pyright: ignore[reportArgumentType]
+        StocksDataset(test_X, test_y),
         batch_size=BATCH_SIZE,
     )
     return StocksDataLoaders(train_loader, val_loader, test_loader), scaler
@@ -192,6 +192,7 @@ def val_step(
             val_loader, desc=f"Number of Val Batches Left for Epoch - {epoch}"
         ):
             X_val = X_val.unsqueeze(-1).to(device)
+            y_val = y_val.unsqueeze(-1)
 
             y_val_pred: torch.Tensor = model(X_val)
 
@@ -232,7 +233,7 @@ def plot_model_performance(all_losses: List[float], all_rsme: List[float]) -> No
 
     plt.title("Model Performance Over Epochs")
     fig.tight_layout()
-    plt.show()
+    plt.savefig(MODEL_INFO_DIR / "model_performance.png")
 
 
 def main() -> None:
