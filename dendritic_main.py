@@ -72,6 +72,7 @@ def main() -> None:
     )
 
     GPA.pai_tracker.set_optimizer(optim.Adam)
+    GPA.pai_tracker.learning_rate = LEARNING_RATE
 
     optimArgs: Dict = {
         "params": model.parameters(),
@@ -142,6 +143,7 @@ def main() -> None:
             print("Model restructured. Adding dendrites and resetting optimizer...")
             track_lstm_params(model)
             model.to(device)
+            GPA.pai_tracker.learning_rate = optimizer.param_groups[0]["lr"]
             optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, None)
 
         all_rmse.append(val_rmse)
@@ -158,7 +160,6 @@ if __name__ == "__main__":
     load_dotenv()
 
     GPA.pc.set_unwrapped_modules_confirmed(True)
-    GPA.pc.set_testing_dendrite_capacity(True)
     GPA.pc.set_cap_at_n(True)
 
     args: Namespace = parse_args()
