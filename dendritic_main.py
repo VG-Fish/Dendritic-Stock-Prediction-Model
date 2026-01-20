@@ -9,7 +9,6 @@ import torch.nn as nn
 import torch.optim as optim
 from dotenv import load_dotenv
 from perforatedai import globals_perforatedai as GPA
-from perforatedai import tracker_perforatedai as tracker_module
 from perforatedai import utils_perforatedai as UPA
 from sklearn.metrics import root_mean_squared_error
 from tqdm import tqdm
@@ -29,20 +28,6 @@ EPOCHS: int = 10
 MODEL_INFO_DIR: Path = Path("model_info")
 
 
-def patched_update_learning_rate() -> None:
-    try:
-        learning_rate: float = 0.0
-        for param_group in GPA.pai_tracker.member_vars[
-            "optimizer_instance"
-        ].param_groups:
-            learning_rate = param_group["lr"]
-        GPA.pai_tracker.add_learning_rate(learning_rate)
-    except Exception as e:
-        print(e)
-
-
-tracker_module.update_learning_rate = patched_update_learning_rate
-
 torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
 if torch.cuda.is_available():
@@ -53,6 +38,7 @@ elif torch.mps.is_available():
 
 def track_lstm_params(model: StockPredictionModel):
     for _, param in model.named_parameters():
+        # PAI can't add "n" attribute to LSTM models automatically, so we must do it manually
         if not hasattr(param, "parameter_type"):
             param.parameter_type = "n"  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -83,12 +69,23 @@ def main() -> None:
 
     criterion: nn.MSELoss = nn.MSELoss().to(device)
 
-    GPA.pai_tracker.set_optimizer(optim.Adam)
     optimArgs: Dict = {
         "params": model.parameters(),
         "lr": LEARNING_RATE,
     }
-    optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, None)
+    GPA.pai_tracker.set_optimizer(optim.Adam)
+
+    schedArgs: Dict = {
+        "mode": "min",
+        "patience": 5,
+        "factor": 0.5,
+        "threshold": 0.001,
+    }
+    GPA.pai_tracker.set_scheduler(optim.lr_scheduler.ReduceLROnPlateau)
+
+    optimizer, PAIscheduler = GPA.pai_tracker.setup_optimizer(
+        model, optimArgs, schedArgs
+    )
 
     all_losses: List[float] = []
     all_rmse: List[float] = []
@@ -153,7 +150,21 @@ def main() -> None:
             print("Model restructured. Adding dendrites and resetting optimizer...")
             track_lstm_params(model)
             model.to(device)
-            optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, None)
+
+            optimArgs = {
+                "params": model.parameters(),
+                "lr": LEARNING_RATE,
+            }
+            schedArgs = {
+                "mode": "min",
+                "patience": 5,
+                "factor": 0.5,
+                "threshold": 0.001,
+            }
+
+            optimizer, PAIscheduler = GPA.pai_tracker.setup_optimizer(
+                model, optimArgs, schedArgs
+            )
 
         all_rmse.append(val_rmse)
         all_dim_accuracies.append(dim_accuracy)
@@ -169,7 +180,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     GPA.pc.set_unwrapped_modules_confirmed(True)
-    GPA.pc.set_testing_dendrite_capacity(True)
+    GPA.pc.set_testing_dendrite_capacity(False)
     GPA.pc.set_cap_at_n(True)
 
     args: Namespace = parse_args()

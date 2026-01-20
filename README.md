@@ -4,43 +4,41 @@
 
 Description:
 
-This submission is an attempt at a Dendritic LSTM model for Stock Prediction. The dataset used for this project is dynamically created by the `download.py` script. The script attempts to Unfortunately, due to starting this project on Saturday, 1/17/26, no hyperparameter sweeps were performed.
+This project attempts to create a Dendritic LSTM model for stock prediction. The `download.py` script dynamically creates the dataset used for this project. The download script attempts to get as much data as possible from companies traded on the NASDAQ (The script consistently gets ~3k companies in around ~30s). Unfortunately, due to starting this project on Saturday (1/17/26), no hyperparameter sweeps were performed.
 
 Team:
 
 - Vishwesswaran Gopal - Freshman @ Purdue - [Linkedin](https://www.linkedin.com/in/vishwesswaran-gopal-76403826a/) - gopal21@purdue.edu
 
-Example Content:
+## Project Impact
 
-MNIST is a standard dataset used to demonstrate proof-of-concept for new tools. This hackathon submission tests adding dendrites to the MNIST example from PyTorch.
+LSTM models are commonly used for natural language tasks, such as machine translation and sentiment analysis; speech and audio processing, like speech and command recognition; time series forecasting, such as financial and weather forecasting; anomaly detection, i.e., fraud detection, and many more use cases not listed here.
 
-## Project Impact - Required
+Due to the importance and abundance of LSTM models, assessing whether LSTM models perform better under dendritic optimization remains crucial as dendritic optimization may allow these models to become cheaper and more efficient, thereby saving money, resources, and time.
 
-Description:
+Thus, this projects attempts to apply dendritic optimization to to a common use case of LSTM models, stock prediction, to determine the viability of dendritic LSTM models.
 
-The Project Impact section should describe why this matters. A short paragraph (a few sentences) is sufficient to explain why improved accuracy or compressed models would matter for this application.
-
-Example Content:
-
-MNIST is a dataset for OCR. Improving the accuracy of an OCR system matters because it ensures that text extracted from images or documents is reliable, reducing errors in data processing and analysis. Higher accuracy also saves time and costs by minimizing the need for manual corrections or reprocessing. In fields like finance, healthcare, and legal work, precise text recognition is critical since even small mistakes can lead to serious misinterpretations or compliance issues.
-
-## Usage Instructions - Required
-
-Description:
-
-Each project must include instructions for how to install and run the project.
-
-The only exeception to this is is you are in a lab or company that is working with proprietary data or models that are not able to be open sourced. If that is the case a PR will not be required, but we will require permission to formally include your company or lab in any publications or related media we produce related to the hackathon.
-
-Example Content:
+## Usage Instructions
 
 Installation:
 
-    pip install -r requirements.txt
+    git clone https://github.com/VG-Fish/Dendritic-Stock-Prediction-Model.git
+    cd "Dendritic-Stock-Prediction-Model"
+    pip install uv
+    uv sync --locked
 
 Run:
 
-    PAIPASSWORD=123 CUDA_VISIBLE_DEVICES=0 python mnist_perforatedai_wandb.py --count 25
+```python
+# For dendritic LSTM model
+uv run dendritic_main.py
+
+# For normal LSTM model
+uv run main.py
+
+# To get more info about parameters, run:
+uv run <CHOOSE_MAIN>.py --help
+```
 
 ## Results - Required
 
@@ -85,30 +83,7 @@ Example Content:
 
 ![Example Perforated AI output graph.](./PAI.png)
 
-## Clean Results Graph - Optional
+## Resources Used
 
-Description:
-
-If you would like to provide a condensed graph that can help visualize the full impact of dendrites. To generate a graph, please use the [results graph template](https://docs.google.com/spreadsheets/d/1SuCrKkS7uzGQSlKniL3OtjIZEcyeW93isHkl6FIgL-0/edit?usp=sharing).
-
-Example Content:
-
-![Example training output graph.](./Accuracy%20Improvement.png)
-
-## Weights and Biases Sweep Report - Optional
-
-Description:
-
-A Weights and Biases sweep report is an ideal way to show that you experimented thoroughly. It can display, with clear visuals, the outcomes of each of your experiments so judges can see exactly how dendrites affected your model and dataset. Having this will grant bonus points from the judges, but it is not mandatory for submission or to win our top prizes. Reach out if you have any trouble creating a Weights and Biases account.
-
-Example Content:
-
-[Weights and Biases Report](https://api.wandb.ai/links/perforated-ai/r97p9ss2)
-
-## Additional Files - Optional
-
-Your code must be runnable; files can be included here or linked elsewhere. Please include them here if there are only a few files, and provide a link to your code only if it is a fork of another large repository. In addition to this README and the code required to run the project, it is helpful to include any original files that show what you started from and what the project looked like before adding dendrites. A `requirements.txt` file is also helpful for installation.
-
-```
-
-```
+- [Stock Price Prediction in Python with PyTorch - Full Tutorial ](https://www.youtube.com/watch?v=IJ50ew8wi-0)
+- [Download NASDAQ Historical Data](https://www.kaggle.com/code/jacksoncrow/download-nasdaq-historical-data)
