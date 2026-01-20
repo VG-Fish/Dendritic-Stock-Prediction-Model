@@ -324,7 +324,17 @@ def float_in_range(low: float, high: float) -> Callable:
     return checker
 
 
-if __name__ == "__main__":
+def parse_args() -> argparse.Namespace:
+    global \
+        RANDOM_SEED, \
+        SEQUENCE_LENGTH, \
+        TRAIN_FRACTION, \
+        VAL_FRACTION, \
+        BATCH_SIZE, \
+        LEARNING_RATE, \
+        EPOCHS, \
+        MODEL_INFO_DIR
+
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="Dendritic LSTM Stock Prediction Model",
         description="This program trains a Dendritic LSTM Stock Prediction Model on data from thousands of companies from the NASDAQ.",
@@ -383,6 +393,11 @@ if __name__ == "__main__":
             f"--val_fraction ({args.val_fraction}) must be less than 1.0 "
             f"to leave room for the test set.{RESET}"
         )
+    return args
+
+
+if __name__ == "__main__":
+    args: argparse.Namespace = parse_args()
 
     RANDOM_SEED = args.random_seed
     SEQUENCE_LENGTH = args.sequence_length
