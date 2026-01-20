@@ -16,8 +16,6 @@ class StocksDataLoaders:
 
 class StocksDataset(Dataset):
     def __init__(self: Self, X: np.ndarray, y: np.ndarray) -> None:
-        # Convert numpy arrays to tensors once during initialization
-        # Use torch.from_numpy for efficiency
         self.sequences = torch.from_numpy(X).to(torch.float32)
         self.targets = torch.from_numpy(y).to(torch.float32)
 

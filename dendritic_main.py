@@ -183,13 +183,14 @@ if __name__ == "__main__":
     args: Namespace = parse_args()
 
     RANDOM_SEED = args.random_seed
+    torch.manual_seed(RANDOM_SEED)
     SEQUENCE_LENGTH = args.sequence_length
     TRAIN_FRACTION = args.train_fraction
     VAL_FRACTION = args.val_fraction
     BATCH_SIZE = args.batch_size
     LEARNING_RATE = args.learning_rate
     EPOCHS = args.epochs
-    MODEL_INFO_DIR = args.model_info_dir
+    MODEL_INFO_DIR = Path(args.model_info_dir)
 
     GPA.pc.set_output_dimensions([-1, -1, 0])
 

@@ -8,7 +8,7 @@ This project attempts to create a Dendritic LSTM model for stock prediction. The
 
 Team:
 
-- Vishwesswaran Gopal - Freshman @ Purdue - [Linkedin](https://www.linkedin.com/in/vishwesswaran-gopal-76403826a/) - gopal21@purdue.edu
+- Vishwesswaran Gopal - First Year Engineering Student @ Purdue - [Linkedin](https://www.linkedin.com/in/vishwesswaran-gopal-76403826a/) - gopal21@purdue.edu
 
 ## Project Impact
 
@@ -36,7 +36,7 @@ uv run dendritic_main.py
 # For normal LSTM model
 uv run main.py
 
-# To get more info about parameters, run:
+# To get more info about the parameters you can pass into the main scripts, run:
 uv run <CHOOSE_MAIN>.py --help
 ```
 
