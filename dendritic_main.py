@@ -213,6 +213,7 @@ if __name__ == "__main__":
 
     GPA.pc.set_testing_dendrite_capacity(False)
     GPA.pc.set_cap_at_n(True)
+    GPA.pc.set_improvement_threshold(1e-5)
 
     GPA.pc.append_modules_to_convert([nn.LSTM])
     GPA.pc.append_modules_to_convert([nn.LayerNorm])

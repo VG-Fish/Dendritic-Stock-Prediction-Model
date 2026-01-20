@@ -27,6 +27,7 @@ class StockPredictionModel(nn.Module):
             batch_first=True,
             device=device,
         )
+        # This layer stabilizes/speeds up training by preventing vanishing/exploding gradients
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim)
         self.dropout: nn.Dropout = nn.Dropout(dropout)
         self.fc: nn.Linear = nn.Linear(
