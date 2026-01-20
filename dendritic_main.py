@@ -71,22 +71,13 @@ def main() -> None:
         lr=LEARNING_RATE,
     )
 
-    GPA.pai_tracker.set_optimizer(optim.Adam)  # pyright: ignore[reportAttributeAccessIssue]
-    GPA.pai_tracker.set_scheduler(optim.lr_scheduler.ReduceLROnPlateau)  # pyright: ignore[reportAttributeAccessIssue]
+    GPA.pai_tracker.set_optimizer(optim.Adam)
 
     optimArgs: Dict = {
         "params": model.parameters(),
         "lr": LEARNING_RATE,
     }
-    schedArgs: Dict = {
-        "mode": "min",
-        "patience": 5,
-        "factor": 0.5,
-        "threshold": 0.001,
-    }
-    optimizer, PAIscheduler = GPA.pai_tracker.setup_optimizer(
-        model, optimArgs, schedArgs
-    )
+    optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, None)
 
     all_losses: List[float] = []
     all_rmse: List[float] = []
@@ -151,9 +142,7 @@ def main() -> None:
             print("Model restructured. Adding dendrites and resetting optimizer...")
             track_lstm_params(model)
             model.to(device)
-            optimizer, PAIscheduler = GPA.pai_tracker.setup_optimizer(
-                model, optimArgs, schedArgs
-            )
+            optimizer = GPA.pai_tracker.setup_optimizer(model, optimArgs, None)
 
         all_rmse.append(val_rmse)
         all_dim_accuracies.append(dim_accuracy)
@@ -169,7 +158,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     GPA.pc.set_unwrapped_modules_confirmed(True)
-    GPA.pc.set_testing_dendrite_capacity(False)
+    GPA.pc.set_testing_dendrite_capacity(True)
     GPA.pc.set_cap_at_n(True)
 
     args: Namespace = parse_args()
