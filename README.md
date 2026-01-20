@@ -52,24 +52,19 @@ Each project must have results. The minimum must be included:
   - Optional - The accuracy of the original network, or other optimal non-dendritic architectures
   - Remaining Error Reduction
     - This is the percentage of remaining error that dendrites reduced. For example, if adding dendrites improves accuracy from 90% to 92%, that is a 20% Remaining Error Reduction. The error drops from 10% to 8%. That 2-percentage-point drop means dendrites eliminated 20% of the original error.
-- Compression Projects
-  - The accuracy and parameter count of the optimal non-dendritic model
-  - The accuracy and parameter count of the final dendritic network
-  - The accuracy and parameter count of that same architecture with the same settings without dendrites (If you look at `PAI/PAIbest_test_scores.csv` this will show the original architecture's scores)
-  - Percent Parameter Reduction
 
-Example Content:
+Both models were trained on all the CSVs present in the `/stocks` folder of the generated dataset. In total, there were 2114 CSV files. The generated dataset also contains a `/etfs`, but no ETF data was used. Before the models are trained, all the CSVs are parsed and sequences of `SEQUENCE_LENGTH` (default is 30 days, can be changed by passing in `--sequence_length <YOUR_NUM_HERE>`) are generated from only the `Close` column, which represents a stock's closing price for a particular day. The models are fed sequences and aim to predict the price for the next day.
 
-This MNIST example shows that Dendritic Optimization can improve accuracy on MNIST. Comparing the best traditional model to the best dendritic model below:
+Comparing the traditional model to the dendritic model below:
 
-| Model       | Final Validation Score | Notes                           |
-| ----------- | ---------------------- | ------------------------------- |
-| Traditional | 99.26                  | Optional Notes here             |
-| Dendritic   | 99.42                  | Such as network hyperparameters |
+| Model       | Final Validation Score | Final Validation RSME (Log Returns) |
+| ----------- | ---------------------- | ----------------------------------- |
+| Traditional | 99.26                  | 0.04416                             |
+| Dendritic   | 99.42                  |                                     |
 
 This provides a Remaining Error Reduction of **21.6%**.
 
-## Raw Results Graph - Required
+## Raw Results Graph
 
 Description:
 
@@ -86,4 +81,5 @@ Example Content:
 ## Resources Used
 
 - [Stock Price Prediction in Python with PyTorch - Full Tutorial ](https://www.youtube.com/watch?v=IJ50ew8wi-0)
-- [Download NASDAQ Historical Data](https://www.kaggle.com/code/jacksoncrow/download-nasdaq-historical-data)
+- [Download NASDAQ Historical Data Reference Script](https://www.kaggle.com/code/jacksoncrow/download-nasdaq-historical-data)
+- [Perplexity](https://www.perplexity.ai/)
