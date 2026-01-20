@@ -248,7 +248,7 @@ def plot_model_performance(
     ax3.set_title("Model Directional Accuracy")
 
     fig.tight_layout()
-    plt.savefig(MODEL_INFO_DIR / "model_performance.png")
+    plt.savefig(MODEL_INFO_DIR / "baseline_model_performance.png")
 
 
 def main() -> None:
@@ -262,7 +262,7 @@ def main() -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=1,
-        hidden_dim=128,
+        hidden_dim=64,
         num_layers=2,
         output_dim=1,
         dropout=0.3,

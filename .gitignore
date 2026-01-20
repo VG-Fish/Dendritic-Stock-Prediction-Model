@@ -3,6 +3,7 @@
 nasdaq_dataset/
 __pycache__/
 *.pt
+.env
 
 # MacOS stuff
 .DS_Store
