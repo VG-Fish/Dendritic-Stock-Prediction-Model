@@ -27,7 +27,7 @@ SEQUENCE_LENGTH: int = 30
 TRAIN_FRACTION: float = 0.8
 VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
-LEARNING_RATE: float = 0.001
+LEARNING_RATE: float = 0.0005
 EPOCHS: int = 10
 MODEL_INFO_DIR: Path = Path("model_info")
 
@@ -261,10 +261,19 @@ def main() -> None:
     data_loaders, scaler = prepare_data(info.stocks_directory)
 
     model: StockPredictionModel = StockPredictionModel(
-        input_dim=1, hidden_dim=128, num_layers=2, output_dim=1, device=device
+        input_dim=1,
+        hidden_dim=128,
+        num_layers=2,
+        output_dim=1,
+        dropout=0.3,
+        device=device,
     ).to(device)
     criterion: nn.MSELoss = nn.MSELoss().to(device)
-    optimizer: optim.Adam = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optimizer: optim.Adam = optim.Adam(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        weight_decay=1e-5,  # Weight decay penalizes large weights
+    )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -274,19 +283,25 @@ def main() -> None:
 
     all_losses: List[float] = []
     all_rmse: List[float] = []
-    all_dim_acccuracies: List[float] = []
+    all_dim_accuracies: List[float] = []
     for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
+        print()
+
         losses: float = train_step(
             model, data_loaders.train, criterion, optimizer, epoch
         )
         all_losses.append(losses)
 
+        print()
+
         rsme, dim_accuray = val_step(model, data_loaders.val, scaler, scheduler, epoch)
         all_rmse.append(rsme)
-        all_dim_acccuracies.append(dim_accuray)
+        all_dim_accuracies.append(dim_accuray)
+
+        print()
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
-    plot_model_performance(all_losses, all_rmse, all_dim_acccuracies)
+    plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
     print("Model training complete!")
 
 

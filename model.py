@@ -11,7 +11,8 @@ class StockPredictionModel(nn.Module):
         hidden_dim: int,
         num_layers: int,
         output_dim: int,
-        device,
+        dropout: float,
+        device: torch.device,
     ) -> None:
         super().__init__()
 
@@ -24,9 +25,9 @@ class StockPredictionModel(nn.Module):
             hidden_dim,
             num_layers,
             batch_first=True,
-            dropout=0.2,
             device=device,
         )
+        self.dropout: nn.Dropout = nn.Dropout(dropout)
         self.fc: nn.Linear = nn.Linear(
             hidden_dim,
             output_dim,
@@ -42,6 +43,6 @@ class StockPredictionModel(nn.Module):
         )
 
         out, (_, _) = self.lstm(x, (h0.detach(), c0.detach()))
-        out = self.fc(out[:, -1, :])
+        out = self.fc(self.dropout(out[:, -1, :]))
 
         return out
