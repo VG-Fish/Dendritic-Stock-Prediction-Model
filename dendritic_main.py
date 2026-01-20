@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 from dotenv import load_dotenv
 from perforatedai import globals_perforatedai as GPA
+from perforatedai import library_perforatedai as LPA
 from perforatedai import utils_perforatedai as UPA
 from sklearn.metrics import root_mean_squared_error
 from tqdm import tqdm
@@ -36,13 +37,6 @@ elif torch.mps.is_available():
     device = torch.device("mps")
 
 
-def track_lstm_params(model: StockPredictionModel):
-    for _, param in model.named_parameters():
-        # PAI can't add "n" attribute to LSTM models automatically, so we must do it manually
-        if not hasattr(param, "parameter_type"):
-            param.parameter_type = "n"  # pyright: ignore[reportAttributeAccessIssue]
-
-
 def main() -> None:
     model_save_dir: Path = MODEL_INFO_DIR / "models"
     os.makedirs(model_save_dir, exist_ok=True)
@@ -65,7 +59,7 @@ def main() -> None:
         save_name=str(MODEL_INFO_DIR),
         maximizing_score=False,  # We're trying to minimize the loss
     )
-    track_lstm_params(model)
+    model.fc.set_this_output_dimensions([-1, 0])  # pyright: ignore[reportCallIssue]
 
     criterion: nn.MSELoss = nn.MSELoss().to(device)
 
@@ -148,7 +142,6 @@ def main() -> None:
             break
         elif restructured:
             print("Model restructured. Adding dendrites and resetting optimizer...")
-            track_lstm_params(model)
             model.to(device)
 
             optimArgs = {
@@ -179,9 +172,13 @@ def main() -> None:
 if __name__ == "__main__":
     load_dotenv()
 
-    GPA.pc.set_unwrapped_modules_confirmed(True)
     GPA.pc.set_testing_dendrite_capacity(False)
     GPA.pc.set_cap_at_n(True)
+
+    GPA.pc.append_modules_to_convert([nn.LSTM])
+    GPA.pc.append_module_names_with_processing(["LSTM"])
+    # This processor lets the dendrites keep track of their own hidden state
+    GPA.pc.append_module_by_name_processing_classes([LPA.LSTMProcessor])
 
     args: Namespace = parse_args()
 
@@ -193,5 +190,7 @@ if __name__ == "__main__":
     LEARNING_RATE = args.learning_rate
     EPOCHS = args.epochs
     MODEL_INFO_DIR = args.model_info_dir
+
+    GPA.pc.set_output_dimensions([-1, -1, 0])
 
     main()
