@@ -12,10 +12,11 @@ from perforatedai import globals_perforatedai as GPA
 from perforatedai import library_perforatedai as LPA
 from perforatedai import utils_perforatedai as UPA
 from sklearn.metrics import root_mean_squared_error
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from download import NASDAQDatasetInfo, NASDAQDownloader
-from main import parse_args, plot_model_performance, prepare_data, train_step
+from main import parse_args, plot_model_performance, prepare_data
 from model import StockPredictionModel
 
 # Initialize important variables
@@ -37,6 +38,40 @@ elif torch.mps.is_available():
     device = torch.device("mps")
 
 
+# Clipped train step suggested by Google Gemini
+def clipped_train_step(
+    model: nn.Module,
+    train_loader: DataLoader,
+    criterion: nn.MSELoss,
+    optimizer: optim.Adam,
+    epoch: int,
+) -> float:
+    model.train()
+    train_loss: float = 0
+
+    # Enable anomaly detection to find where gradients die
+    torch.autograd.set_detect_anomaly(True)
+
+    for X_train, y_train in tqdm(
+        train_loader, desc=f"Number of Train Batches Left for Epoch - {epoch}"
+    ):
+        X_train = X_train.unsqueeze(-1).to(device)
+        y_train = y_train.unsqueeze(-1).to(device)
+
+        y_train_pred = model(X_train)
+        loss = criterion(y_train_pred, y_train)
+        train_loss += loss.item()
+
+        optimizer.zero_grad()
+        loss.backward()
+
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        optimizer.step()
+
+    return train_loss / len(train_loader)
+
+
 def main() -> None:
     model_save_dir: Path = MODEL_INFO_DIR / "models"
     os.makedirs(model_save_dir, exist_ok=True)
@@ -49,16 +84,19 @@ def main() -> None:
     model: StockPredictionModel = StockPredictionModel(
         input_dim=1,
         hidden_dim=64,
-        num_layers=2,
+        num_layers=1,
         output_dim=1,
-        dropout=0.5,
+        dropout=0.2,
         device=device,
     ).to(device)
+
     UPA.initialize_pai(
         model,
         save_name=str(MODEL_INFO_DIR),
         maximizing_score=False,  # We're trying to minimize the loss
     )
+    model.lstm.set_this_output_dimensions([-1, -1, 0])  # pyright: ignore[reportCallIssue]
+    model.layer_norm.set_this_output_dimensions([-1, 0])  # pyright: ignore[reportCallIssue]
     model.fc.set_this_output_dimensions([-1, 0])  # pyright: ignore[reportCallIssue]
 
     criterion: nn.MSELoss = nn.MSELoss().to(device)
@@ -88,11 +126,11 @@ def main() -> None:
     while True:
         epochs += 1
 
-        loss: float = train_step(
+        loss: float = clipped_train_step(
             model, data_loaders.train, criterion, optimizer, epochs
         )
         all_losses.append(loss)
-        GPA.pai_tracker.add_extra_score(loss, "Train")
+        GPA.pai_tracker.add_extra_score(loss, "Train Loss")
 
         print()
 
@@ -128,6 +166,7 @@ def main() -> None:
         dim_accuracy = np.mean(dim_correct).item()
 
         val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
+        GPA.pai_tracker.add_extra_score(val_rmse, "Val RSME")
 
         val_loss: float = criterion(
             final_predictions_scaled.to(device), final_targets_scaled.to(device)
@@ -176,6 +215,7 @@ if __name__ == "__main__":
     GPA.pc.set_cap_at_n(True)
 
     GPA.pc.append_modules_to_convert([nn.LSTM])
+    GPA.pc.append_modules_to_convert([nn.LayerNorm])
     GPA.pc.append_module_names_with_processing(["LSTM"])
     # This processor lets the dendrites keep track of their own hidden state
     GPA.pc.append_module_by_name_processing_classes([LPA.LSTMProcessor])
@@ -191,7 +231,5 @@ if __name__ == "__main__":
     LEARNING_RATE = args.learning_rate
     EPOCHS = args.epochs
     MODEL_INFO_DIR = Path(args.model_info_dir)
-
-    GPA.pc.set_output_dimensions([-1, -1, 0])
 
     main()

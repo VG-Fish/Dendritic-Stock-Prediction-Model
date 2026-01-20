@@ -27,6 +27,7 @@ class StockPredictionModel(nn.Module):
             batch_first=True,
             device=device,
         )
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim)
         self.dropout: nn.Dropout = nn.Dropout(dropout)
         self.fc: nn.Linear = nn.Linear(
             hidden_dim,
@@ -42,7 +43,9 @@ class StockPredictionModel(nn.Module):
             self.num_layers, x.size(0), self.hidden_dim, device=self.device
         )
 
-        out, (_, _) = self.lstm(x, (h0.detach(), c0.detach()))
-        out = self.fc(self.dropout(out[:, -1, :]))
+        out, (_, _) = self.lstm(x, (h0, c0))
+        out = out[:, -1, :]
+        out = self.layer_norm(out)
+        out = self.fc(self.dropout(out))
 
         return out
