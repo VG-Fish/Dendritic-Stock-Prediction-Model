@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 from dotenv import load_dotenv
 from perforatedai import globals_perforatedai as GPA
+from perforatedai import tracker_perforatedai as tracker_module
 from perforatedai import utils_perforatedai as UPA
 from sklearn.metrics import root_mean_squared_error
 from tqdm import tqdm
@@ -26,6 +27,21 @@ BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0005
 EPOCHS: int = 10
 MODEL_INFO_DIR: Path = Path("model_info")
+
+
+def patched_update_learning_rate() -> None:
+    try:
+        learning_rate: float = 0.0
+        for param_group in GPA.pai_tracker.member_vars[
+            "optimizer_instance"
+        ].param_groups:
+            learning_rate = param_group["lr"]
+        GPA.pai_tracker.add_learning_rate(learning_rate)
+    except Exception as e:
+        print(e)
+
+
+tracker_module.update_learning_rate = patched_update_learning_rate
 
 torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
