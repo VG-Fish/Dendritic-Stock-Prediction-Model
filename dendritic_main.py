@@ -101,7 +101,6 @@ def main() -> None:
         maximizing_score=False,  # We're trying to minimize the loss
     )
     model.lstm.set_this_output_dimensions([-1, -1, 0])  # pyright: ignore[reportCallIssue]
-    model.layer_norm.set_this_output_dimensions([-1, 0])  # pyright: ignore[reportCallIssue]
     model.fc.set_this_output_dimensions([-1, 0])  # pyright: ignore[reportCallIssue]
 
     criterion: nn.MSELoss = nn.MSELoss().to(device)
@@ -314,10 +313,17 @@ if __name__ == "__main__":
     # Suggestion by Gemini
     GPA.pc.set_improvement_threshold(5e-3)
 
-    GPA.pc.append_modules_to_convert([nn.LSTM, nn.LayerNorm])
+    # Ignore warnings
+    GPA.pc.set_unwrapped_modules_confirmed(True)
+    GPA.pc.set_weight_decay_accepted(True)
+
+    GPA.pc.append_modules_to_convert([nn.LSTM])
+    GPA.pc.get_modules_to_track().append(nn.LayerNorm)
     GPA.pc.append_module_names_with_processing(["LSTM"])
     # This processor lets the dendrites keep track of their own hidden state
     GPA.pc.append_module_by_name_processing_classes([LPA.LSTMProcessor])
+
+    GPA.pc.set_max_dendrites(2)
 
     args: argparse.Namespace = parse_args()
 
