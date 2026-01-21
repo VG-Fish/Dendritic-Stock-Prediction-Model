@@ -1,7 +1,7 @@
+import argparse
 import os
-from argparse import Namespace
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 import numpy as np
 import torch
@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from download import NASDAQDatasetInfo, NASDAQDownloader
-from main import parse_args, plot_model_performance, prepare_data
+from main import plot_model_performance, prepare_data
 from model import StockPredictionModel
 
 # Initialize important variables
@@ -27,7 +27,11 @@ VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0005
 EPOCHS: int = 10
-MODEL_INFO_DIR: Path = Path("model_info")
+MODEL_INFO_DIR: Path = Path("model_info_final")
+
+# ANSI escape codes
+RED: str = "\033[31m"
+RESET: str = "\033[0m"
 
 
 torch.manual_seed(RANDOM_SEED)
@@ -166,7 +170,6 @@ def main() -> None:
         dim_accuracy: float = np.mean(dim_correct).item()
 
         val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
-        GPA.pai_tracker.add_extra_score(val_rmse, "Val RSME")
 
         val_loss: float = criterion(
             final_predictions_scaled.to(device), final_targets_scaled.to(device)
@@ -183,9 +186,10 @@ def main() -> None:
             print("Model restructured. Adding dendrites and resetting optimizer...")
             model.to(device)
 
+            current_lr: float = optimizer.param_groups[0]["lr"]
             optimArgs = {
                 "params": model.parameters(),
-                "lr": LEARNING_RATE,
+                "lr": current_lr,
             }
             schedArgs = {
                 "mode": "min",
@@ -208,6 +212,97 @@ def main() -> None:
     print("Model training complete!")
 
 
+def float_in_range(low: float, high: float) -> Callable:
+    def checker(value: str) -> float:
+        try:
+            f_value = float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"{RED}'{value}' is not a valid float.{RESET}"
+            )
+
+        f_value = float(value)
+        if f_value < low or f_value >= high:
+            raise argparse.ArgumentTypeError(
+                f"{RED}Value must be in [{low}, {high}){RESET}"
+            )
+        return f_value
+
+    return checker
+
+
+def parse_args() -> argparse.Namespace:
+    global \
+        RANDOM_SEED, \
+        SEQUENCE_LENGTH, \
+        TRAIN_FRACTION, \
+        VAL_FRACTION, \
+        BATCH_SIZE, \
+        LEARNING_RATE, \
+        EPOCHS, \
+        MODEL_INFO_DIR
+
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
+        prog="Dendritic LSTM Stock Prediction Model",
+        description="This program trains a Dendritic LSTM Stock Prediction Model on data from thousands of companies from the NASDAQ.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--random_seed", help="Set the random seed.", type=int, default=RANDOM_SEED
+    )
+    parser.add_argument(
+        "--sequence_length",
+        help="How many days the model should consider to predict the price for the next day.",
+        type=int,
+        default=SEQUENCE_LENGTH,
+    )
+    parser.add_argument(
+        "--train_fraction",
+        help="How big the training dataset should be. This parameter should be in [0, 1).",
+        type=float_in_range(0.0, 1.0),
+        default=TRAIN_FRACTION,
+    )
+    parser.add_argument(
+        "--val_fraction",
+        help="How big the validation dataset should be. This parameter should be in [0, 1).",
+        type=float_in_range(0.0, 1.0),
+        default=VAL_FRACTION,
+    )
+    parser.add_argument(
+        "--batch_size",
+        help="How big each batch size should be. This parameter should ideally be a power of 2.",
+        type=int,
+        default=BATCH_SIZE,
+    )
+    parser.add_argument(
+        "--learning_rate",
+        help="The model learning rate.",
+        type=float,
+        default=LEARNING_RATE,
+    )
+    parser.add_argument(
+        "--epochs",
+        help="The number of epochs.",
+        type=int,
+        default=EPOCHS,
+    )
+    parser.add_argument(
+        "--model_info_dir",
+        help="The directory to save all model related stuff to.",
+        type=str,
+        default=MODEL_INFO_DIR,
+    )
+    args: argparse.Namespace = parser.parse_args()
+
+    if args.train_fraction + args.val_fraction >= 1.0:
+        parser.error(
+            f"{RED}The sum of --train_fraction ({args.train_fraction}) and "
+            f"--val_fraction ({args.val_fraction}) must be less than 1.0 "
+            f"to leave room for the test set.{RESET}"
+        )
+    return args
+
+
 if __name__ == "__main__":
     load_dotenv()
 
@@ -215,14 +310,14 @@ if __name__ == "__main__":
     # To quicken training
     GPA.pc.set_cap_at_n(True)
     # Suggestion by Gemini
-    GPA.pc.set_improvement_threshold(1e-5)
+    GPA.pc.set_improvement_threshold(1e-3)
 
     GPA.pc.append_modules_to_convert([nn.LSTM, nn.LayerNorm])
     GPA.pc.append_module_names_with_processing(["LSTM"])
     # This processor lets the dendrites keep track of their own hidden state
     GPA.pc.append_module_by_name_processing_classes([LPA.LSTMProcessor])
 
-    args: Namespace = parse_args()
+    args: argparse.Namespace = parse_args()
 
     RANDOM_SEED = args.random_seed
     torch.manual_seed(RANDOM_SEED)

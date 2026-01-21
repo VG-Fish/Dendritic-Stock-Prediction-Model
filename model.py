@@ -28,7 +28,7 @@ class StockPredictionModel(nn.Module):
             device=device,
         )
         # This layer stabilizes/speeds up training by preventing vanishing/exploding gradients
-        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim, device=device)
         self.dropout: nn.Dropout = nn.Dropout(dropout)
         self.fc: nn.Linear = nn.Linear(
             hidden_dim,
@@ -37,15 +37,10 @@ class StockPredictionModel(nn.Module):
         )
 
     def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
-        h0: torch.Tensor = torch.zeros(
-            self.num_layers, x.size(0), self.hidden_dim, device=self.device
-        )
-        c0: torch.Tensor = torch.zeros(
-            self.num_layers, x.size(0), self.hidden_dim, device=self.device
-        )
+        out, _ = self.lstm(x)
 
-        out, (_, _) = self.lstm(x, (h0, c0))
         out = out[:, -1, :]
+
         out = self.layer_norm(out)
         out = self.fc(self.dropout(out))
 
