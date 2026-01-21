@@ -100,6 +100,18 @@ def main() -> None:
         save_name=str(MODEL_INFO_DIR),
         maximizing_score=False,  # We're trying to minimize the loss
     )
+
+    try:
+        # Converting to CPU to avoid no placeholder storage on MPS error.
+        model.to("cpu")
+        print(f"Attempting to resume from: {MODEL_INFO_DIR}")
+        model = UPA.load_system(model, str(MODEL_INFO_DIR), "latest", True)
+        print("Successfully resumed previous run.")
+    except Exception as e:
+        print(f"Could not resume (starting fresh): {e}")
+    finally:
+        model.to(device)
+
     model.lstm.set_this_output_dimensions([-1, -1, 0])  # pyright: ignore[reportCallIssue]
     model.fc.set_this_output_dimensions([-1, 0])  # pyright: ignore[reportCallIssue]
 
