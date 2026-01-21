@@ -53,7 +53,7 @@ This provides a Remaining Error Reduction of **0.06%**.
 
 ## Raw Results Graph:
 
-![Dendritic LSTM Stock Prediction Model Output Graph.](model_info_final/model_info_final.png)
+![Dendritic LSTM Stock Prediction Model Output Graph.](model_info/model_info.png)
 
 All data outputted from using `perforatedai` libraries can be seen in the `model_info` (default folder, can be configured) folder.
 
