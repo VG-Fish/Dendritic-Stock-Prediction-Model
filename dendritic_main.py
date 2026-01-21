@@ -65,6 +65,7 @@ def clipped_train_step(
         optimizer.zero_grad()
         loss.backward()
 
+        # This apparently can stop the vanishing gradients problem
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
@@ -138,7 +139,6 @@ def main() -> None:
         model.eval()
         val_predictions: List[torch.Tensor] = []
         val_targets: List[torch.Tensor] = []
-        dim_accuracy: float = 0.0
         with torch.no_grad():
             for X_val, y_val in tqdm(
                 data_loaders.val,
@@ -163,7 +163,7 @@ def main() -> None:
         )
 
         dim_correct: np.ndarray = np.sign(final_predictions) == np.sign(final_targets)
-        dim_accuracy = np.mean(dim_correct).item()
+        dim_accuracy: float = np.mean(dim_correct).item()
 
         val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
         GPA.pai_tracker.add_extra_score(val_rmse, "Val RSME")
@@ -212,11 +212,12 @@ if __name__ == "__main__":
     load_dotenv()
 
     GPA.pc.set_testing_dendrite_capacity(False)
+    # To quicken training
     GPA.pc.set_cap_at_n(True)
+    # Suggestion by Gemini
     GPA.pc.set_improvement_threshold(1e-5)
 
-    GPA.pc.append_modules_to_convert([nn.LSTM])
-    GPA.pc.append_modules_to_convert([nn.LayerNorm])
+    GPA.pc.append_modules_to_convert([nn.LSTM, nn.LayerNorm])
     GPA.pc.append_module_names_with_processing(["LSTM"])
     # This processor lets the dendrites keep track of their own hidden state
     GPA.pc.append_module_by_name_processing_classes([LPA.LSTMProcessor])
