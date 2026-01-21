@@ -1,7 +1,0 @@
-Epochs,Best ever for all nodes Layer .fc,Best current for all nodes Layer .fc,Best ever for all nodes Layer .lstm,Best current for all nodes Layer .lstm
-0,5.67971910641063e-05,,,
-1,0.00012239451461937279,,,
-2,5.184726614970714e-05,,,
-0,,,5.187238912185421e-06,
-1,,,6.696402579109417e-06,
-2,,,7.619710231665522e-06,

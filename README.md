@@ -48,10 +48,10 @@ Comparing the traditional model to the dendritic model below:
 
 | Model       | Final Validation Score (MSE) |
 | ----------- | ---------------------------- |
-| Traditional | 0.8203176259994507           |
-| Dendritic   | 0.8195596933364868           |
+| Traditional | 0.8204414248466492           |
+| Dendritic   | 0.8199569582939148           |
 
-This provides a Remaining Error Reduction of **0.092%**.
+This provides a Remaining Error Reduction of **0.06%**.
 
 ## Raw Results Graph
 
@@ -62,3 +62,4 @@ This provides a Remaining Error Reduction of **0.092%**.
 - [Stock Price Prediction in Python with PyTorch - Full Tutorial ](https://www.youtube.com/watch?v=IJ50ew8wi-0)
 - [Download NASDAQ Historical Data Reference Script](https://www.kaggle.com/code/jacksoncrow/download-nasdaq-historical-data)
 - [Perplexity](https://www.perplexity.ai/)
+- [Gemini](https://gemini.google.com/app)
