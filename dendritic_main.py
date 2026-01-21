@@ -91,7 +91,7 @@ def main() -> None:
         hidden_dim=64,
         num_layers=1,
         output_dim=1,
-        dropout=0.2,
+        dropout=0.5,
         device=device,
     ).to(device)
 
@@ -109,6 +109,7 @@ def main() -> None:
     optimArgs: Dict = {
         "params": model.parameters(),
         "lr": LEARNING_RATE,
+        "weight_decay": 1e-4,
     }
     GPA.pai_tracker.set_optimizer(optim.Adam)
 
@@ -190,6 +191,7 @@ def main() -> None:
             optimArgs = {
                 "params": model.parameters(),
                 "lr": current_lr,
+                "weight_decay": 1e-4,
             }
             schedArgs = {
                 "mode": "min",
@@ -310,7 +312,7 @@ if __name__ == "__main__":
     # To quicken training
     GPA.pc.set_cap_at_n(True)
     # Suggestion by Gemini
-    GPA.pc.set_improvement_threshold(1e-3)
+    GPA.pc.set_improvement_threshold(5e-3)
 
     GPA.pc.append_modules_to_convert([nn.LSTM, nn.LayerNorm])
     GPA.pc.append_module_names_with_processing(["LSTM"])
