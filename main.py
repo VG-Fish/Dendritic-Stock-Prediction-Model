@@ -24,7 +24,7 @@ TRAIN_FRACTION: float = 0.8
 VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0001
-EPOCHS: int = 50
+EPOCHS: int = 75
 MODEL_INFO_DIR: Path = Path("improved_lstm_model_info")
 
 # ANSI escape codes

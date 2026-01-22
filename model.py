@@ -58,7 +58,7 @@ class DirectionalMSELoss(nn.Module):
         self.penalty_factor: float = penalty_factor
 
     def forward(self: Self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        mse_loss: float = self.mse(y_pred, y_true)
+        mse_loss: torch.Tensor = self.mse(y_pred, y_true)
 
         # - (pred * true) = positive when signs of pred & true are different, causing ReLU to be +
         direction_penalty: torch.Tensor = torch.mean(torch.relu(-y_pred * y_true))
