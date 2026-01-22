@@ -84,13 +84,13 @@ def val_step(
         for X_val, y_val in tqdm(
             val_loader, desc=f"Number of Val Batches Left for Epoch - {epoch}"
         ):
-            X_val = X_val.unsqueeze(-1).to(device)
-            y_val = y_val.unsqueeze(-1)
+            X_val = X_val.to(device)
+            y_val = y_val.to(device)
 
             y_val_pred: torch.Tensor = model(X_val)
 
             val_predictions.append(y_val_pred.cpu())
-            val_targets.append(y_val)
+            val_targets.append(y_val.cpu())
 
     final_predictions_scaled: torch.Tensor = torch.vstack(val_predictions)
     final_targets_scaled: torch.Tensor = torch.vstack(val_targets)

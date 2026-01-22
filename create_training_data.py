@@ -166,15 +166,17 @@ def _create_data_loaders(
 ) -> NASDAQDataLoaders:
     print("Creating training data loader...")
     train_loader = DataLoader(
-        NASDAQDataset(train_df), batch_size=BATCH_SIZE, shuffle=True
+        NASDAQDataset(train_df), batch_size=BATCH_SIZE, shuffle=True, num_workers=0
     )
 
     print("Creating validation data loader...")
-    val_loader = DataLoader(NASDAQDataset(val_df), batch_size=BATCH_SIZE, shuffle=False)
+    val_loader = DataLoader(
+        NASDAQDataset(val_df), batch_size=BATCH_SIZE, shuffle=False, num_workers=0
+    )
 
     print("Creating test data loader...")
     test_loader = DataLoader(
-        NASDAQDataset(test_df), batch_size=BATCH_SIZE, shuffle=False
+        NASDAQDataset(test_df), batch_size=BATCH_SIZE, shuffle=False, num_workers=0
     )
 
     print("Finished creating PyTorch DataLoaders!")
