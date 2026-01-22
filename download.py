@@ -80,7 +80,7 @@ class NASDAQDownloader:
         stock_data_pd = stock_data_pd.reset_index()
 
         # 6 is the number of columns we want, some CSVs have 7 columns with "Adjusted Close".
-        # Adding those CSVs makes like more inconvenient, so I'm just ignoring them here.
+        # Adding those CSVs makes life more inconvenient, so I'm just ignoring them here.
         if len(stock_data_pd.columns) != 6 or stock_data_pd.empty:
             return False
 
