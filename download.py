@@ -43,11 +43,11 @@ class NASDAQDownloader:
             self.data_directory / "symbols_valid_meta.csv",
         )
 
-        data: pl.DataFrame = pl.read_csv(
+        self.data: pl.DataFrame = pl.read_csv(
             "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
         ).filter(pl.col("Test Issue") == "N")
 
-        self.symbol_data: pl.DataFrame = data.select("Symbol", "ETF").unique(
+        self.symbol_data: pl.DataFrame = self.data.select("Symbol", "ETF").unique(
             subset=["Symbol"], keep="first"
         )
 
@@ -198,7 +198,7 @@ class NASDAQDownloader:
             f"Valid Files on Disk: {len(valid_symbols)}"
         )
 
-        self.symbol_data.filter(pl.col("Symbol").is_in(valid_symbols)).write_csv(
+        self.data.filter(pl.col("Symbol").is_in(valid_symbols)).write_csv(
             self._dataset_info.valid_tickers_metadata
         )
 

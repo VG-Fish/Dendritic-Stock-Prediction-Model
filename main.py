@@ -177,7 +177,7 @@ def main() -> None:
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(
-        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1500
+        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1000
     )
 
     data_loaders, price_stats = create_data_loaders_from(
