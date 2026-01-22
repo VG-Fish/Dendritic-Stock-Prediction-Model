@@ -23,8 +23,8 @@ SEQUENCE_LENGTH: int = 30
 TRAIN_FRACTION: float = 0.8
 VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
-LEARNING_RATE: float = 0.0001
-EPOCHS: int = 75
+LEARNING_RATE: float = 0.0002
+EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
 MODEL_INFO_DIR: Path = Path("improved_lstm_model_info")
 
 # ANSI escape codes
@@ -111,6 +111,7 @@ def val_step(
 
     dim_correct: np.ndarray = np.sign(final_predictions) == np.sign(final_targets)
     dim_accuracy = np.mean(dim_correct).item()
+    print(f"\nCurrent Dimensional Accuracy: {dim_accuracy:.3f}%")
 
     val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
     print(f"\nCurrent RSME: {val_rmse}")
@@ -167,37 +168,37 @@ def main() -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=5,
-        hidden_dim=64,
-        num_layers=2,
+        hidden_dim=32,
+        num_layers=1,
         output_dim=1,
         dropout=0.2,
         device=device,
     ).to(device)
-    criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=10.0).to(device)
+    criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=1.0).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
-        weight_decay=1e-5,  # Weight decay penalizes large weights
+        weight_decay=1e-4,  # Weight decay penalizes large weights
     )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
         factor=0.5,
-        patience=5,
+        patience=10,
     )
 
     all_losses: List[float] = []
     all_rmse: List[float] = []
     all_dim_accuracies: List[float] = []
-    for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
-        print()
 
+    best_val_rmse: float = float("inf")
+    patience: int = 15
+    counter: int = 0
+    for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
         losses: float = train_step(
             model, data_loaders.train, criterion, optimizer, epoch
         )
         all_losses.append(losses)
-
-        print()
 
         rsme, dim_accuray = val_step(
             model, data_loaders.val, price_stats, scheduler, epoch
@@ -205,7 +206,16 @@ def main() -> None:
         all_rmse.append(rsme)
         all_dim_accuracies.append(dim_accuray)
 
-        print()
+        if rsme < best_val_rmse:
+            best_val_rmse = rsme
+            counter = 0
+            torch.save(model.state_dict(), model_save_dir / "best_model.pt")
+        else:
+            counter += 1
+            print(f"No improvement for {counter} epochs.")
+            if counter >= patience:
+                print("Early stopping triggered!")
+                break
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
     plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
