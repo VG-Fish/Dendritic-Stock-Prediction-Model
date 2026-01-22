@@ -6,6 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import redirect_stderr
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Dict, List, Optional, Self
 
@@ -26,6 +27,12 @@ class NASDAQDatasetInfo:
     valid_tickers_metadata: Path
 
 
+class SecurityType(StrEnum):
+    STOCK = "N"
+    ETF = "Y"
+    ALL = "A"
+
+
 class NASDAQDownloader:
     def __init__(self: Self, data_directory: str = "nasdaq_dataset") -> None:
         self.data_directory: Path = Path(data_directory)
@@ -40,10 +47,10 @@ class NASDAQDownloader:
             "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
         )
         self.cleaned_data: pl.DataFrame = data.filter(pl.col("Test Issue") == "N")
-        self.symbols: pl.Series = self.cleaned_data["Symbol"]
+        self.symbol_data: pl.DataFrame = self.cleaned_data.select("Symbol", "ETF")
 
     def _process_symbol(self: Self, i: int) -> bool:
-        symbol: str = self.symbols[i]
+        symbol: str = self.symbol_data["Symbol"][i]
         periods: List[str] = [
             "1d",
             "5d",
@@ -95,8 +102,9 @@ class NASDAQDownloader:
 
     def download_dataset(
         self: Self,
+        security_type: SecurityType,
         stop_if_dest_dir_exists: bool = True,
-        total: Optional[None] = None,
+        target: Optional[int] = None,
     ) -> NASDAQDatasetInfo:
         if stop_if_dest_dir_exists and os.path.exists(self.data_directory):
             return self._dataset_info
@@ -104,10 +112,23 @@ class NASDAQDownloader:
         os.makedirs(self._dataset_info.stocks_directory, exist_ok=True)
         os.makedirs(self._dataset_info.etfs_directory, exist_ok=True)
 
-        num_symbols: int = total or len(self.symbols)
-        is_valid: List[bool] = [False] * len(self.symbols)
+        match security_type:
+            case SecurityType.STOCK:
+                self.symbol_data = self.symbol_data.filter(
+                    pl.col("ETF") == SecurityType.STOCK
+                )
+            case SecurityType.ETF:
+                self.symbol_data = self.symbol_data.filter(
+                    pl.col("ETF") == SecurityType.ETF
+                )
+            case SecurityType.ALL:
+                pass
+        print(self.symbol_data)
 
-        # The triple with statement removes all logs to stderr
+        num_symbols: int = target or len(self.symbol_data)
+        is_valid: List[bool] = [False] * len(self.symbol_data)
+
+        # The first two statements in this triple with statement removes all logs to stderr
         with (
             open(os.devnull, "w") as devnull,
             redirect_stderr(devnull),
@@ -133,7 +154,7 @@ class NASDAQDownloader:
                 f"Total percentage of valid symbols downloaded: {(num_downloaded / num_symbols * 100) = :.3f}%"
             )
 
-        self.cleaned_data.filter(is_valid).write_csv(
+        self.symbol_data.filter(is_valid).write_csv(
             self._dataset_info.valid_tickers_metadata
         )
 
