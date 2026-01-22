@@ -25,6 +25,7 @@ VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0002
 EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
+LOAD_DATASET_FROM_MEMORY: bool = False
 MODEL_INFO_DIR: Path = Path("dimensional_bidirectional_lstm_model_info")
 
 # ANSI escape codes
@@ -175,7 +176,9 @@ def main() -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
 
     data_loaders, price_stats = create_data_loaders_from(
-        info.stocks_directory, MODEL_INFO_DIR, load_datasets_from_memory=False
+        info.stocks_directory,
+        MODEL_INFO_DIR,
+        load_datasets_from_memory=LOAD_DATASET_FROM_MEMORY,
     )
 
     model: StockPredictionModel = StockPredictionModel(
@@ -332,6 +335,12 @@ def parse_args() -> argparse.Namespace:
         default=EPOCHS,
     )
     parser.add_argument(
+        "--load_dataset_from_memory",
+        help="Whether to load all of the datasets from memory. (This is a flag)",
+        action="store_true",
+        default=LOAD_DATASET_FROM_MEMORY,
+    )
+    parser.add_argument(
         "--model_info_dir",
         help="The directory to save all model related stuff to.",
         type=str,
@@ -359,6 +368,7 @@ if __name__ == "__main__":
     BATCH_SIZE = args.batch_size
     LEARNING_RATE = args.learning_rate
     EPOCHS = args.epochs
+    LOAD_DATASET_FROM_MEMORY = args.load_dataset_from_memory
     MODEL_INFO_DIR = Path(args.model_info_dir)
 
     main()
