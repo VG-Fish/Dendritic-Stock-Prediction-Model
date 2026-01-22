@@ -71,7 +71,7 @@ def train_step(
         optimizer.step()
 
     epoch_loss: float = train_loss / len(train_loader)
-    print(f"Current Training Loss: {epoch_loss}")
+    print(f"Current Training Loss: {epoch_loss}\n")
 
     return epoch_loss
 
@@ -113,7 +113,7 @@ def val_step(
     dim_accuracy = np.mean(dim_correct).item()
 
     val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
-    print(f"Current RSME: {val_rmse}")
+    print(f"Current RSME: {val_rmse}\n")
 
     scheduler.step(val_rmse)
 
