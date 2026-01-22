@@ -14,7 +14,7 @@ from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
 from create_training_data import NormalizationData, create_data_loaders_from
-from download import NASDAQDatasetInfo, NASDAQDownloader
+from download import NASDAQDatasetInfo, NASDAQDownloader, SecurityType
 from model import DirectionalMSELoss, StockPredictionModel
 
 # Initialize important variables
@@ -60,8 +60,11 @@ def train_step(
         X_train = X_train.to(device)
         y_train = y_train.to(device)
 
-        y_train_pred: torch.Tensor = model(X_train)
-        loss: torch.Tensor = criterion(y_train_pred, y_train)
+        # This adds mixed amp precision for faster training
+        with torch.autocast(device_type=device.type, dtype=torch.float16):
+            y_train_pred = model(X_train)
+            loss = criterion(y_train_pred, y_train)
+
         train_loss += loss.item()
 
         optimizer.zero_grad()
@@ -173,7 +176,9 @@ def main() -> None:
     os.makedirs(model_save_dir, exist_ok=True)
 
     downloader: NASDAQDownloader = NASDAQDownloader()
-    info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
+    info: NASDAQDatasetInfo = downloader.download_dataset(
+        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1500
+    )
 
     data_loaders, price_stats = create_data_loaders_from(
         info.stocks_directory,

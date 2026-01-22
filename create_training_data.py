@@ -53,6 +53,62 @@ class NormalizationData:
         return cls(mean=data["mean"], std=data["std"])
 
 
+# Gemini suggested function
+def check_data_integrity(df: pl.DataFrame, name: str = "Dataset") -> None:
+    print(f"--- Checking {name} for NaNs and Infs ---")
+
+    # Identify float columns (only they can hold NaN/Inf)
+    float_cols: List[str] = [
+        col
+        for col, dtype in zip(df.columns, df.dtypes)
+        if dtype in (pl.Float32, pl.Float64)
+    ]
+
+    found_issue: bool = False
+
+    # 1. Check for Nulls
+    null_counts: Tuple = df.select(pl.all().null_count()).row(0)
+    if sum(null_counts) > 0:
+        print(f"{RED}Found NULLs in {name}:{RESET}")
+        for col, count in zip(df.columns, null_counts):
+            if count > 0:
+                print(f"  {col}: {count}")
+        found_issue = True
+
+    # 2. Check for NaNs
+    if float_cols:
+        nan_exprs: List[pl.Expr] = [
+            pl.col(c).is_nan().sum().alias(c) for c in float_cols
+        ]
+        nan_counts: Tuple = df.select(nan_exprs).row(0)
+
+        if sum(nan_counts) > 0:
+            print(f"{RED}Found NaNs in {name}:{RESET}")
+            for col, count in zip(float_cols, nan_counts):
+                if count > 0:
+                    print(f"  {col}: {count}")
+            found_issue = True
+
+    # 3. Check for Infs
+    if float_cols:
+        inf_exprs: List[pl.Expr] = [
+            pl.col(c).is_infinite().sum().alias(c) for c in float_cols
+        ]
+        inf_counts: Tuple = df.select(inf_exprs).row(0)
+
+        if sum(inf_counts) > 0:
+            print(f"{RED}Found Infs in {name}:{RESET}")
+            for col, count in zip(float_cols, inf_counts):
+                if count > 0:
+                    print(f"  {col}: {count}")
+            found_issue = True
+
+    if not found_issue:
+        print(f"✅ {name} looks clean.")
+    else:
+        print(f"{RED}!! Data integrity issues found in {name} !!{RESET}")
+
+
 # Gemini suggestion to improve dimensional accuracy
 # RSI calculates if the stock was overbought
 def compute_rsi(expr: pl.Expr, period: int = 14) -> pl.Expr:
@@ -64,7 +120,10 @@ def compute_rsi(expr: pl.Expr, period: int = 14) -> pl.Expr:
     ma_up: pl.Expr = up.ewm_mean(com=period - 1, ignore_nulls=True)
     ma_down: pl.Expr = down.ewm_mean(com=period - 1, ignore_nulls=True)
     rs: pl.Expr = ma_up / ma_down
-    return 100 - (100 / (1 + rs))
+
+    rsi: pl.Expr = 100 - (100 / (1 + rs))
+    # Make NaNs neutral (50)
+    return rsi.fill_nan(50)
 
 
 def _create_datasets_from(directory: Path) -> SplitDFDatasets:
@@ -105,6 +164,7 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
         .with_columns(pl.all().exclude("Path", "Date", "Index").cast(pl.Float32))
         .drop("High", "Low", "Date", "Close", "Volume", "Open")
         .drop_nulls()
+        .filter(pl.all_horizontal(pl.all().exclude("Path", "Index").is_finite()))
         .rolling(
             index_column="Index",
             period=f"{SEQUENCE_LENGTH}i",
@@ -124,6 +184,7 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
             pl.col("MACD Signal").list.slice(0, window_size),
         )
         .drop("Log Return", "Log Overnight", "Log Range", "Log Volume Change")
+        .drop_nulls()
     )
 
     # Sets up code for splitting up the dataset into train, val, and test datasets
@@ -134,26 +195,34 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     # (.rolling() assumes the data is sorted, anyway.)
     df: pl.DataFrame = (
         lf.collect()
-        .sample(fraction=1.0, shuffle=True, seed=RANDOM_SEED)
-        .with_columns(pl.len().over("Path").alias("Num Path"))
+        .sort(["Path", "Index"])
         .with_columns(
-            (pl.col("Num Path") * TRAIN_FRACTION).cast(pl.Int64).alias("Num Train"),
-            (pl.col("Num Path") * VAL_FRACTION).cast(pl.Int64).alias("Num Val"),
+            (pl.int_range(0, pl.len()).over("Path") / pl.len().over("Path")).alias(
+                "Quantile"
+            )
         )
-        .drop("Path", "Index", "Num Path", "Num Train", "Num Val")
     )
 
-    total_rows: int = len(df)
-    train_size: int = int(total_rows * TRAIN_FRACTION)
-    val_size: int = int(total_rows * VAL_FRACTION)
+    train_df: pl.DataFrame = df.filter(pl.col("Quantile") < TRAIN_FRACTION)
 
-    train_df: pl.DataFrame = df.slice(0, train_size)
-    val_df: pl.DataFrame = df.slice(train_size, val_size)
-    test_df: pl.DataFrame = df.slice(
-        train_size + val_size, total_rows - (train_size + val_size)
+    val_df: pl.DataFrame = df.filter(
+        (pl.col("Quantile") >= TRAIN_FRACTION)
+        & (pl.col("Quantile") < (TRAIN_FRACTION + VAL_FRACTION))
     )
 
-    print("Created initial datasets...")
+    test_df: pl.DataFrame = df.filter(
+        pl.col("Quantile") >= (TRAIN_FRACTION + VAL_FRACTION)
+    )
+
+    train_df = train_df.drop("Path", "Index", "Quantile").sample(
+        fraction=1.0, shuffle=True, seed=RANDOM_SEED
+    )
+    val_df = val_df.drop("Path", "Index", "Quantile")
+    test_df = test_df.drop("Path", "Index", "Quantile")
+
+    print(
+        f"Created datasets: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}"
+    )
 
     return SplitDFDatasets(train_df, val_df, test_df)
 
@@ -181,7 +250,7 @@ def fit_and_scale_data(
     if std == 0:
         std = 1.0
 
-    def standardize_column(col_name: str):
+    def standardize_column(col_name: str) -> pl.Expr:
         return (pl.col(col_name) - mean) / std
 
     train = train.with_columns([standardize_column(c) for c in col_group])
@@ -193,23 +262,26 @@ def fit_and_scale_data(
     return train, val, test, normalization_data
 
 
+def _create_dataloader(df: pl.DataFrame) -> DataLoader:
+    return DataLoader(
+        NASDAQDataset(df),
+        batch_size=BATCH_SIZE,
+        num_workers=1,
+        persistent_workers=True,
+    )
+
+
 def _create_data_loaders(
     train_df: pl.DataFrame, val_df: pl.DataFrame, test_df: pl.DataFrame
 ) -> NASDAQDataLoaders:
     print("Creating training data loader...")
-    train_loader = DataLoader(
-        NASDAQDataset(train_df), batch_size=BATCH_SIZE, shuffle=True, num_workers=0
-    )
+    train_loader = _create_dataloader(train_df)
 
     print("Creating validation data loader...")
-    val_loader = DataLoader(
-        NASDAQDataset(val_df), batch_size=BATCH_SIZE, shuffle=False, num_workers=0
-    )
+    val_loader = _create_dataloader(val_df)
 
     print("Creating test data loader...")
-    test_loader = DataLoader(
-        NASDAQDataset(test_df), batch_size=BATCH_SIZE, shuffle=False, num_workers=0
-    )
+    test_loader = _create_dataloader(test_df)
 
     print("Finished creating PyTorch DataLoaders!")
 
