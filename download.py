@@ -3,12 +3,12 @@
 import logging
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import redirect_stderr
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Dict, List, Optional, Self
+from typing import Dict, List, Optional, Self, Tuple
 
 import pandas as pd
 import polars as pl
@@ -45,12 +45,13 @@ class NASDAQDownloader:
 
         data: pl.DataFrame = pl.read_csv(
             "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
-        )
-        self.cleaned_data: pl.DataFrame = data.filter(pl.col("Test Issue") == "N")
-        self.symbol_data: pl.DataFrame = self.cleaned_data.select("Symbol", "ETF")
+        ).filter(pl.col("Test Issue") == "N")
 
-    def _process_symbol(self: Self, i: int) -> bool:
-        symbol: str = self.symbol_data["Symbol"][i]
+        self.symbol_data: pl.DataFrame = data.select("Symbol", "ETF").unique(
+            subset=["Symbol"], keep="first"
+        )
+
+    def _process_symbol(self: Self, symbol: str, is_etf: bool) -> Tuple[str, bool]:
         periods: List[str] = [
             "1d",
             "5d",
@@ -63,11 +64,21 @@ class NASDAQDownloader:
             "10y",
             "max",
         ]
+
+        # Sanitize symbol for filename (e.g., "BRK/B" -> "BRK-B")
+        safe_symbol = symbol.replace("/", "-").replace("^", "-")
+        subdir = "etfs" if is_etf else "stocks"
+        stock_data_path = self.data_directory / subdir / f"{safe_symbol}.csv"
+
+        if stock_data_path.exists():
+            return symbol, True
+
         stock_data_pd: Optional[pd.DataFrame] = None
-        # Start with longest periods, if getting all the data is successful, break the loop.
+
+        # Try downloading with the largest period possible
         for period in reversed(periods):
             try:
-                stock_data_pd = yf.download(symbol, period=period)
+                stock_data_pd = yf.download(symbol, period=period, progress=False)
             except Exception:
                 continue
 
@@ -75,30 +86,26 @@ class NASDAQDownloader:
                 continue
             break
 
-        # Safety check
         if stock_data_pd is None:
-            return False
+            return symbol, False
 
-        # Removes ticker name from MultiIndex columns
+        # Cleanup DataFrame structure
         if isinstance(stock_data_pd.columns, pd.MultiIndex):
             stock_data_pd.columns = stock_data_pd.columns.get_level_values(0)
 
-        # This line ensures that the "Date" index gets saved as the "Date" index is turned into a column
         stock_data_pd = stock_data_pd.reset_index()
 
-        # 6 is the number of columns we want, some CSVs have 7 columns with "Adjusted Close".
-        # Adding those CSVs makes life more inconvenient, so I'm just ignoring them here.
-        if len(stock_data_pd.columns) != 6 or stock_data_pd.empty:
-            return False
+        # Only accept CSVs with 6 columns including Date, some have 7 columns
+        if len(stock_data_pd.columns) < 6 or stock_data_pd.empty:
+            return symbol, False
 
-        stock_data = pl.from_pandas(stock_data_pd, include_index=True)
-
-        etf_flag = self.cleaned_data[i]["ETF"][0]
-        stock_data_path: str = f"{self.data_directory}/{'etfs' if etf_flag == 'Y' else 'stocks'}/{symbol}.csv"
-        if not os.path.exists(stock_data_path):
+        try:
+            stock_data = pl.from_pandas(stock_data_pd, include_index=True)
             stock_data.write_csv(stock_data_path)
+        except Exception:
+            return symbol, False
 
-        return True
+        return symbol, True
 
     def download_dataset(
         self: Self,
@@ -107,57 +114,92 @@ class NASDAQDownloader:
         target: Optional[int] = None,
     ) -> NASDAQDatasetInfo:
         if stop_if_dest_dir_exists and os.path.exists(self.data_directory):
+            print(f"Directory {self.data_directory} exists. Skipping download.")
             return self._dataset_info
 
         os.makedirs(self._dataset_info.stocks_directory, exist_ok=True)
         os.makedirs(self._dataset_info.etfs_directory, exist_ok=True)
 
+        candidates: pl.DataFrame = self.symbol_data
         match security_type:
             case SecurityType.STOCK:
-                self.symbol_data = self.symbol_data.filter(
-                    pl.col("ETF") == SecurityType.STOCK
-                )
+                candidates = candidates.filter(pl.col("ETF") == "N")
             case SecurityType.ETF:
-                self.symbol_data = self.symbol_data.filter(
-                    pl.col("ETF") == SecurityType.ETF
-                )
-            case SecurityType.ALL:
-                pass
-        print(self.symbol_data)
+                candidates = candidates.filter(pl.col("ETF") == "Y")
 
-        num_symbols: int = target or len(self.symbol_data)
-        is_valid: List[bool] = [False] * len(self.symbol_data)
+        print(f"Found {len(candidates)} candidate symbols.")
+
+        total_available = len(candidates)
+        target_downloads = target if target is not None else total_available
+        target_downloads = min(target_downloads, total_available)
+
+        candidate_rows: List[Tuple] = candidates.rows()
+        valid_symbols: List[str] = []
 
         # The first two statements in this triple with statement removes all logs to stderr
         with (
             open(os.devnull, "w") as devnull,
             redirect_stderr(devnull),
-            ThreadPoolExecutor(max_workers=32) as ex,
+            ThreadPoolExecutor(max_workers=32) as executor,
         ):
-            futures: Dict = {
-                ex.submit(self._process_symbol, i): i for i in range(num_symbols)
-            }
-            for future in tqdm(
-                as_completed(futures),
-                total=num_symbols,
-                file=sys.stdout,
+            pending_futures: Dict = {}
+            next_idx: int = 0
+            success_count: int = 0
+
+            while next_idx < target_downloads:
+                symbol, etf_flag = candidate_rows[next_idx]
+                future = executor.submit(self._process_symbol, symbol, etf_flag == "Y")
+                pending_futures[future] = next_idx
+                next_idx += 1
+
+            with tqdm(
+                total=target_downloads,
                 desc="Downloading Dataset...",
-            ):
-                i: int = futures[future]
-                try:
-                    is_valid[i] = future.result()
-                except Exception:
-                    is_valid[i] = False
+                unit="file",
+                file=sys.stdout,
+            ) as pbar:
+                while pending_futures and success_count < target_downloads:
+                    # Wait for at least one future to complete
+                    # FIRST_COMPLETED ensures we process results as soon as they arrive
+                    done, _ = wait(pending_futures.keys(), return_when=FIRST_COMPLETED)
 
-            num_downloaded: int = sum(is_valid)
-            print(
-                f"Total percentage of valid symbols downloaded: {(num_downloaded / num_symbols * 100) = :.3f}%"
-            )
+                    for future in done:
+                        _ = pending_futures.pop(future)
 
-        self.symbol_data.filter(is_valid).write_csv(
+                        is_success: bool
+                        sym_result: str = ""
+                        try:
+                            sym_result, is_success = future.result()
+                        except Exception:
+                            is_success = False
+
+                        if is_success:
+                            success_count += 1
+                            valid_symbols.append(sym_result)
+                            pbar.update(1)
+                        else:
+                            if next_idx < total_available:
+                                new_symbol, new_etf_flag = candidate_rows[next_idx]
+                                new_future = executor.submit(
+                                    self._process_symbol,
+                                    new_symbol,
+                                    new_etf_flag == "Y",
+                                )
+                                pending_futures[new_future] = next_idx
+                                next_idx += 1
+
+                # If we hit the target, cancel any remaining tasks
+                for f in pending_futures:
+                    f.cancel()
+
+        print(
+            f"Download complete. "
+            f"Target: {target_downloads}, Success: {success_count}, "
+            f"Valid Files on Disk: {len(valid_symbols)}"
+        )
+
+        self.symbol_data.filter(pl.col("Symbol").is_in(valid_symbols)).write_csv(
             self._dataset_info.valid_tickers_metadata
         )
 
-        # Python threads need to be shutdown, and it takes a while
-        print("Cleaning up...")
         return self._dataset_info
