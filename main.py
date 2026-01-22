@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from download import NASDAQDatasetInfo, NASDAQDownloader
 from model import StockPredictionModel
-from stocks import StocksDataLoaders, StocksDataset
+from stocks import NASDAQDataLoaders, NASDAQDataset
 
 # Initialize important variables
 RANDOM_SEED: int = 1290
@@ -54,8 +54,7 @@ class ProcessedData:
 
 
 def make_windows_per_ticker(stock: pl.DataFrame) -> ProcessedData:
-    stock = stock.sort("Date")
-    stock = stock.filter(pl.col("Close") > 0)
+    stock = stock.sort("Date").drop("Date")
 
     if len(stock) < SEQUENCE_LENGTH + 10:
         empty_X: np.ndarray = np.empty((0, SEQUENCE_LENGTH - 1))
@@ -83,7 +82,7 @@ def make_windows_per_ticker(stock: pl.DataFrame) -> ProcessedData:
     return ProcessedData(train_X, train_y, val_X, val_y, test_X, test_y)
 
 
-def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
+def prepare_data(stocks_dir: Path) -> Tuple[NASDAQDataLoaders, StandardScaler]:
     all_train_X, all_train_y = [], []
     all_val_X, all_val_y = [], []
     all_test_X, all_test_y = [], []
@@ -138,19 +137,19 @@ def prepare_data(stocks_dir: Path) -> Tuple[StocksDataLoaders, StandardScaler]:
     test_y = scaler.transform(test_y.reshape(-1, 1)).flatten()  # pyright: ignore[reportAttributeAccessIssue]
 
     train_loader: DataLoader = DataLoader(
-        StocksDataset(train_X, train_y),
+        NASDAQDataset(train_X, train_y),
         batch_size=BATCH_SIZE,
         shuffle=True,
     )
     val_loader: DataLoader = DataLoader(
-        StocksDataset(val_X, val_y),
+        NASDAQDataset(val_X, val_y),
         batch_size=BATCH_SIZE,
     )
     test_loader: DataLoader = DataLoader(
-        StocksDataset(test_X, test_y),
+        NASDAQDataset(test_X, test_y),
         batch_size=BATCH_SIZE,
     )
-    return StocksDataLoaders(train_loader, val_loader, test_loader), scaler
+    return NASDAQDataLoaders(train_loader, val_loader, test_loader), scaler
 
 
 def train_step(

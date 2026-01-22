@@ -4,6 +4,7 @@ nasdaq_dataset/
 __pycache__/
 *.pt
 .env
+*.parquet
 
 # MacOS stuff
 .DS_Store

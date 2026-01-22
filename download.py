@@ -69,7 +69,7 @@ class NASDAQDownloader:
             break
 
         # Safety check
-        if stock_data_pd is None or stock_data_pd.empty:
+        if stock_data_pd is None:
             return False
 
         # Removes ticker name from MultiIndex columns
@@ -78,6 +78,12 @@ class NASDAQDownloader:
 
         # This line ensures that the "Date" index gets saved as the "Date" index is turned into a column
         stock_data_pd = stock_data_pd.reset_index()
+
+        # 6 is the number of columns we want, some CSVs have 7 columns with "Adjusted Close".
+        # Adding those CSVs makes like more inconvenient, so I'm just ignoring them here.
+        if len(stock_data_pd.columns) != 6 or stock_data_pd.empty:
+            return False
+
         stock_data = pl.from_pandas(stock_data_pd, include_index=True)
 
         etf_flag = self.cleaned_data[i]["ETF"][0]

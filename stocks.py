@@ -2,25 +2,41 @@ from dataclasses import dataclass
 from typing import Self, Tuple
 
 import numpy as np
+import polars as pl
 import torch
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 
 
 @dataclass
-class StocksDataLoaders:
+class NASDAQDataLoaders:
     train: DataLoader
     val: DataLoader
     test: DataLoader
 
 
-class StocksDataset(Dataset):
-    def __init__(self: Self, X: np.ndarray, y: np.ndarray) -> None:
-        self.sequences = torch.from_numpy(X).to(torch.float32)
-        self.targets = torch.from_numpy(y).to(torch.float32)
+class NASDAQDataset(Dataset):
+    def __init__(self: Self, df: pl.DataFrame) -> None:
+        self.features = torch.tensor(
+            np.stack(
+                [
+                    np.stack(df["Close"].to_numpy()),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                    np.stack(df["Open"].to_numpy()),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                    np.stack(df["Volume"].to_numpy()),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                    np.stack(df["Range"].to_numpy()),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                    np.stack(df["Rolling STD"].to_numpy()),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                ],
+                axis=2,
+            ),
+            dtype=torch.float32,
+        )
+
+        self.targets = torch.tensor(
+            df["Target"].to_numpy(), dtype=torch.float32
+        ).unsqueeze(1)
 
     def __len__(self: Self) -> int:
-        return self.sequences.shape[0]
+        return len(self.features)
 
     def __getitem__(self: Self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.sequences[idx], self.targets[idx]
+        return self.features[idx], self.targets[idx]
