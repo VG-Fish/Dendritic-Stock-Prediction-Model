@@ -15,7 +15,6 @@ SEQUENCE_LENGTH: int = 30
 TRAIN_FRACTION: float = 0.8
 BATCH_SIZE: int = 256
 VAL_FRACTION: float = 0.1
-MODEL_INFO_DIR: Path = Path("improved_lstm_model_info")
 
 # ANSI escape codes
 RED: str = "\033[31m"
@@ -95,7 +94,7 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
             .alias("MACD"),  # MACD tells the LSTM the strength of the trend.
         )
         # Calculate MACD Signal line (9 EMA of MACD)
-        # EMA = exponential moving average
+        # EMA = exponential moving average, which places more weight on more recent data points
         .with_columns(pl.col("MACD").ewm_mean(span=9).over("Path").alias("MACD Signal"))
         .with_columns(
             pl.col("Log Return")
@@ -218,9 +217,11 @@ def _create_data_loaders(
 
 
 def create_data_loaders_from(
-    directory: Path, load_datasets_from_memory: bool = False
+    directory: Path,
+    save_directory: Path,
+    load_datasets_from_memory: bool = False,
 ) -> Tuple[NASDAQDataLoaders, NormalizationData]:
-    dataset_directory = MODEL_INFO_DIR / "scaled_datasets"
+    dataset_directory = save_directory / "scaled_datasets"
     norm_file_path = dataset_directory / "normalization_data.txt"
 
     if load_datasets_from_memory:
@@ -270,6 +271,7 @@ def create_data_loaders_from(
     )
 
     dataset_directory.mkdir(parents=True, exist_ok=True)
+    print("Saving datasets...")
     train_df.write_parquet(dataset_directory / "train.parquet")
     val_df.write_parquet(dataset_directory / "val.parquet")
     test_df.write_parquet(dataset_directory / "test.parquet")
@@ -298,13 +300,7 @@ def float_in_range(low: float, high: float) -> Callable:
 
 
 def parse_args() -> argparse.Namespace:
-    global \
-        RANDOM_SEED, \
-        SEQUENCE_LENGTH, \
-        TRAIN_FRACTION, \
-        VAL_FRACTION, \
-        BATCH_SIZE, \
-        MODEL_INFO_DIR
+    global RANDOM_SEED, SEQUENCE_LENGTH, TRAIN_FRACTION, VAL_FRACTION, BATCH_SIZE
 
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="Dendritic LSTM Stock Prediction Model",
@@ -338,12 +334,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=BATCH_SIZE,
     )
-    parser.add_argument(
-        "--model_info_dir",
-        help="The directory to save all model related stuff to.",
-        type=str,
-        default=MODEL_INFO_DIR,
-    )
     args: argparse.Namespace = parser.parse_args()
 
     if args.train_fraction + args.val_fraction >= 1.0:
@@ -364,4 +354,3 @@ if __name__ == "__main__":
     TRAIN_FRACTION = args.train_fraction
     VAL_FRACTION = args.val_fraction
     BATCH_SIZE = args.batch_size
-    MODEL_INFO_DIR = Path(args.model_info_dir)

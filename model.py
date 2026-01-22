@@ -28,11 +28,13 @@ class StockPredictionModel(nn.Module):
             bidirectional=True,
             device=device,
         )
+        # Doing bidirectional = True doubles the amount of hidden units
+        num_hidden_units: int = hidden_dim * 2
         # This layer stabilizes/speeds up training by preventing vanishing/exploding gradients
-        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim * 2, device=device)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(num_hidden_units, device=device)
         self.dropout: nn.Dropout = nn.Dropout(dropout)
 
-        self.fc_1: nn.Linear = nn.Linear(hidden_dim * 2, hidden_dim, device=device)
+        self.fc_1: nn.Linear = nn.Linear(num_hidden_units, hidden_dim, device=device)
         self.relu: nn.ReLU = nn.ReLU()
         self.fc_2: nn.Linear = nn.Linear(hidden_dim, output_dim, device=device)
 

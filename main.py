@@ -29,6 +29,7 @@ MODEL_INFO_DIR: Path = Path("dimensional_bidirectional_lstm_model_info")
 
 # ANSI escape codes
 RED: str = "\033[31m"
+GREEN: str = "\033[32m"
 RESET: str = "\033[0m"
 
 torch.manual_seed(RANDOM_SEED)
@@ -76,31 +77,28 @@ def train_step(
     return epoch_loss
 
 
-def val_step(
+def evaluate(
     model: StockPredictionModel,
-    val_loader: DataLoader,
+    loader: DataLoader,
     price_stats: NormalizationData,
-    scheduler: ReduceLROnPlateau,
-    epoch: int,
+    desc: str = "Evaluating",
 ) -> Tuple[float, float]:
     model.eval()
-    val_predictions: List[torch.Tensor] = []
-    val_targets: List[torch.Tensor] = []
-    dim_accuracy: float = 0.0
+    all_predictions: List[torch.Tensor] = []
+    all_targets: List[torch.Tensor] = []
+
     with torch.no_grad():
-        for X_val, y_val in tqdm(
-            val_loader, desc=f"Number of Val Batches Left for Epoch - {epoch}"
-        ):
-            X_val = X_val.to(device)
-            y_val = y_val.to(device)
+        for X, y in tqdm(loader, desc=desc):
+            X = X.to(device)
+            y = y.to(device)
 
-            y_val_pred: torch.Tensor = model(X_val)
+            output = model(X)
 
-            val_predictions.append(y_val_pred.cpu())
-            val_targets.append(y_val.cpu())
+            all_predictions.append(output.cpu())
+            all_targets.append(y.cpu())
 
-    final_predictions_scaled: torch.Tensor = torch.vstack(val_predictions)
-    final_targets_scaled: torch.Tensor = torch.vstack(val_targets)
+    final_predictions_scaled: torch.Tensor = torch.vstack(all_predictions)
+    final_targets_scaled: torch.Tensor = torch.vstack(all_targets)
 
     final_predictions: np.ndarray = inverse_transform(
         final_predictions_scaled.numpy(), price_stats
@@ -110,11 +108,25 @@ def val_step(
     )
 
     dim_correct: np.ndarray = np.sign(final_predictions) == np.sign(final_targets)
-    dim_accuracy = np.mean(dim_correct).item()
-    print(f"\nCurrent Dimensional Accuracy: {dim_accuracy:.3f}%")
+    dim_accuracy: float = np.mean(dim_correct).item()
+    rmse: float = root_mean_squared_error(final_targets, final_predictions)
 
-    val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
-    print(f"\nCurrent RSME: {val_rmse}")
+    return rmse, dim_accuracy
+
+
+def val_step(
+    model: StockPredictionModel,
+    val_loader: DataLoader,
+    price_stats: NormalizationData,
+    scheduler: ReduceLROnPlateau,
+    epoch: int,
+) -> Tuple[float, float]:
+    val_rmse, dim_accuracy = evaluate(
+        model, val_loader, price_stats, desc=f"Val Epoch {epoch}"
+    )
+
+    print(f"\nCurrent Dimensional Accuracy: {dim_accuracy:.3%}")
+    print(f"Current RMSE: {val_rmse}")
 
     scheduler.step(val_rmse)
 
@@ -163,15 +175,15 @@ def main() -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
 
     data_loaders, price_stats = create_data_loaders_from(
-        info.stocks_directory, load_datasets_from_memory=True
+        info.stocks_directory, MODEL_INFO_DIR, load_datasets_from_memory=False
     )
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=8,
-        hidden_dim=64,
+        hidden_dim=128,
         num_layers=2,
         output_dim=1,
-        dropout=0.2,
+        dropout=0.25,
         device=device,
     ).to(device)
     criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=2.0).to(device)
@@ -218,9 +230,31 @@ def main() -> None:
                 break
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
+
         plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
+
     plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
     print("Model training complete!")
+
+    print("\n" + "=" * 30)
+    print("Running final test evaluation...")
+    print("=" * 30)
+
+    best_model_path = model_save_dir / "best_model.pt"
+    print(f"Loading best model from: {best_model_path}")
+    model.load_state_dict(torch.load(best_model_path))
+
+    test_rmse, test_acc = evaluate(
+        model, data_loaders.test, price_stats, desc="Testing model"
+    )
+
+    print(f"\nFinal Test RMSE: {test_rmse:.5f}")
+    print(f"Final Test Directional Accuracy: {test_acc:.3%}")
+
+    if test_acc > 0.5:
+        print(f"{GREEN}SUCCESS: The model beats random guessing!{RESET}")
+    else:
+        print(f"{RED}FAILURE: The model failed to generalize.{RESET}")
 
 
 def float_in_range(low: float, high: float) -> Callable:
