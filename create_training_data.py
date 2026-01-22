@@ -1,5 +1,4 @@
 import argparse
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Self, Tuple
@@ -8,7 +7,6 @@ import polars as pl
 import torch
 from torch.utils.data.dataloader import DataLoader
 
-from download import NASDAQDatasetInfo, NASDAQDownloader
 from stocks import NASDAQDataLoaders, NASDAQDataset
 
 # Initialize important variables
@@ -60,20 +58,30 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     print(f"Scanning for CSVs in {directory}...")
 
     window_size: int = SEQUENCE_LENGTH - 1
+    glob: List = list(directory.glob("*.csv"))
+    print(f"Going through {len(glob)} CSVs...")
     lf: pl.LazyFrame = (
-        pl.scan_csv(
-            directory / "*.csv", include_file_paths="Path", try_parse_dates=True
-        )
+        pl.scan_csv(glob, include_file_paths="Path", try_parse_dates=True)
         .sort(["Path", "Date"])
+        # We must remove rows where Volume = 0 as log(0) = -inf
+        .filter(~pl.any_horizontal(pl.col("Volume") == 0))
         .with_columns(
             pl.int_range(pl.len()).over("Path").alias("Index"),
-            (pl.col("High") - pl.col("Low")).alias("Range"),
-            pl.col("Close")
+            pl.col("Close").log().diff().over("Path").alias("Log Return"),
+            (pl.col("Open").log() - pl.col("Close").log().shift(1).over("Path")).alias(
+                "Log Overnight"
+            ),
+            (pl.col("High").log() - pl.col("Low").log()).alias("Log Range"),
+            pl.col("Volume").log().diff().over("Path").alias("Log Volume Change"),
+        )
+        .with_columns(
+            pl.col("Log Return")
             .rolling_std(window_size=SEQUENCE_LENGTH)
-            .alias("Rolling STD"),
+            .over("Path")
+            .alias("Rolling STD")
         )
         .with_columns(pl.all().exclude("Path", "Date", "Index").cast(pl.Float32))
-        .drop("High", "Low", "Date")
+        .drop("High", "Low", "Date", "Close", "Volume", "Open")
         .drop_nulls()
         .rolling(
             index_column="Index",
@@ -83,43 +91,41 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
         .having(pl.len() == SEQUENCE_LENGTH)
         .all()
         .with_columns(
-            pl.col("Close").list.last().alias("Target"),
-            # I'm slicing the lists manually without using a loop as I couldn't get it to work
-            # + this approach should be faster.
-            pl.col("Close").list.slice(0, window_size),
-            pl.col("Open").list.slice(0, window_size),
-            pl.col("Volume").list.slice(0, window_size),
-            pl.col("Range").list.slice(0, window_size),
-            pl.col("Rolling STD").list.slice(0, window_size),
+            pl.col("Log Return").list.last().alias("Target"),
+            pl.col("Log Return").list.slice(0, window_size).alias("Close"),
+            pl.col("Log Overnight").list.slice(0, window_size).alias("Open"),
+            pl.col("Log Volume Change").list.slice(0, window_size).alias("Volume"),
+            pl.col("Log Range").list.slice(0, window_size).alias("Range"),
+            pl.col("Rolling STD").list.slice(0, window_size).alias("Rolling STD"),
         )
     )
+
     # Sets up code for splitting up the dataset into train, val, and test datasets
     # by finding how much data points exist for each company. Then, we figure out
     # how much data points should be in the train and val datasets.
     # Test dataset gets the rest of the points. We don't sort the data before doing
     # all of these operations as the data should already be sorted from above.
     # (.rolling() assumes the data is sorted, anyway.)
-    df: pl.DataFrame = lf.collect()
-    df = df.with_columns(pl.len().over("Path").alias("Num Path"))
-    df = df.with_columns(
-        (pl.col("Num Path") * TRAIN_FRACTION).cast(pl.Int64).alias("Num Train"),
-        (pl.col("Num Path") * VAL_FRACTION).cast(pl.Int64).alias("Num Val"),
-    ).drop_nulls()
-
-    columns_to_drop: List[str] = ["Path", "Index", "Num Path", "Num Train", "Num Val"]
-
-    train_df: pl.DataFrame = df.filter(pl.col("Index") < pl.col("Num Train")).drop(
-        columns_to_drop
+    df: pl.DataFrame = (
+        lf.collect()
+        .sample(fraction=1.0, shuffle=True, seed=RANDOM_SEED)
+        .with_columns(pl.len().over("Path").alias("Num Path"))
+        .with_columns(
+            (pl.col("Num Path") * TRAIN_FRACTION).cast(pl.Int64).alias("Num Train"),
+            (pl.col("Num Path") * VAL_FRACTION).cast(pl.Int64).alias("Num Val"),
+        )
+        .drop("Path", "Index", "Num Path", "Num Train", "Num Val")
     )
 
-    val_df: pl.DataFrame = df.filter(
-        (pl.col("Index") >= pl.col("Num Train"))
-        & (pl.col("Index") < pl.col("Num Train") + pl.col("Num Val"))
-    ).drop(columns_to_drop)
+    total_rows: int = len(df)
+    train_size: int = int(total_rows * TRAIN_FRACTION)
+    val_size: int = int(total_rows * VAL_FRACTION)
 
-    test_df: pl.DataFrame = df.filter(
-        pl.col("Index") >= pl.col("Num Train") + pl.col("Num Val")
-    ).drop(columns_to_drop)
+    train_df: pl.DataFrame = df.slice(0, train_size)
+    val_df: pl.DataFrame = df.slice(train_size, val_size)
+    test_df: pl.DataFrame = df.slice(
+        train_size + val_size, total_rows - (train_size + val_size)
+    )
 
     print("Created initial datasets...")
 
@@ -241,16 +247,6 @@ def create_data_loaders_from(
     return _create_data_loaders(train_df, val_df, test_df), price_norm
 
 
-def main() -> None:
-    model_save_dir: Path = MODEL_INFO_DIR / "models"
-    os.makedirs(model_save_dir, exist_ok=True)
-
-    downloader: NASDAQDownloader = NASDAQDownloader()
-    info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
-
-    create_data_loaders_from(info.stocks_directory, load_datasets_from_memory=False)
-
-
 def float_in_range(low: float, high: float) -> Callable:
     def checker(value: str) -> float:
         try:
@@ -338,5 +334,3 @@ if __name__ == "__main__":
     VAL_FRACTION = args.val_fraction
     BATCH_SIZE = args.batch_size
     MODEL_INFO_DIR = Path(args.model_info_dir)
-
-    main()

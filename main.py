@@ -6,7 +6,6 @@ from typing import Callable, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 from matplotlib.axes import Axes
 from sklearn.metrics import root_mean_squared_error
@@ -16,7 +15,7 @@ from tqdm import tqdm
 
 from create_training_data import NormalizationData, create_data_loaders_from
 from download import NASDAQDatasetInfo, NASDAQDownloader
-from model import StockPredictionModel
+from model import DirectionalMSELoss, StockPredictionModel
 
 # Initialize important variables
 RANDOM_SEED: int = 1290
@@ -24,8 +23,8 @@ SEQUENCE_LENGTH: int = 30
 TRAIN_FRACTION: float = 0.8
 VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
-LEARNING_RATE: float = 0.0005
-EPOCHS: int = 10
+LEARNING_RATE: float = 0.0001
+EPOCHS: int = 50
 MODEL_INFO_DIR: Path = Path("improved_lstm_model_info")
 
 # ANSI escape codes
@@ -47,7 +46,7 @@ def inverse_transform(data: np.ndarray, stats: NormalizationData) -> np.ndarray:
 def train_step(
     model: StockPredictionModel,
     train_loader: DataLoader,
-    criterion: nn.MSELoss,
+    criterion: DirectionalMSELoss,
     optimizer: optim.Adam,
     epoch: int,
 ) -> float:
@@ -65,8 +64,16 @@ def train_step(
 
         optimizer.zero_grad()
         loss.backward()
+
+        # This prevents model weights from exploding and turning into NaN
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         optimizer.step()
-    return train_loss / len(train_loader)
+
+    epoch_loss: float = train_loss / len(train_loader)
+    print(f"Current Training Loss: {epoch_loss}")
+
+    return epoch_loss
 
 
 def val_step(
@@ -106,6 +113,7 @@ def val_step(
     dim_accuracy = np.mean(dim_correct).item()
 
     val_rmse: float = root_mean_squared_error(final_targets, final_predictions)
+    print(f"Current RSME: {val_rmse}")
 
     scheduler.step(val_rmse)
 
@@ -131,6 +139,7 @@ def plot_model_performance(
     ax2.plot(all_rsme, color=color, label="Val RMSE")
     ax2.tick_params(axis="y", labelcolor=color)
     ax1.set_title("Loss and Error Over Epochs")
+    plt.legend()
 
     ax3.plot(all_dim_accuracies, color="tab:green", label="Directional Accuracy")
     ax3.axhline(
@@ -139,6 +148,7 @@ def plot_model_performance(
     ax3.set_xlabel("Epochs")
     ax3.set_ylabel("Accuracy (%)")
     ax3.set_title("Model Directional Accuracy")
+    plt.legend()
 
     fig.tight_layout()
     plt.savefig(MODEL_INFO_DIR / "baseline_model_performance.png")
@@ -157,13 +167,13 @@ def main() -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=5,
-        hidden_dim=32,
-        num_layers=1,
+        hidden_dim=64,
+        num_layers=2,
         output_dim=1,
-        dropout=0.3,
+        dropout=0.2,
         device=device,
     ).to(device)
-    criterion: nn.MSELoss = nn.MSELoss().to(device)
+    criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=10.0).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,

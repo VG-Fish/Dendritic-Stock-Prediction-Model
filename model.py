@@ -49,3 +49,18 @@ class StockPredictionModel(nn.Module):
         out = self.fc(self.dropout(out))
 
         return out
+
+
+class DirectionalMSELoss(nn.Module):
+    def __init__(self: Self, penalty_factor: float = 5.0):
+        super().__init__()
+        self.mse: nn.MSELoss = nn.MSELoss()
+        self.penalty_factor: float = penalty_factor
+
+    def forward(self: Self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        mse_loss: float = self.mse(y_pred, y_true)
+
+        # - (pred * true) = positive when signs of pred & true are different, causing ReLU to be +
+        direction_penalty: torch.Tensor = torch.mean(torch.relu(-y_pred * y_true))
+
+        return mse_loss + (self.penalty_factor * direction_penalty)
