@@ -25,16 +25,16 @@ class StockPredictionModel(nn.Module):
             hidden_dim,
             num_layers,
             batch_first=True,
+            bidirectional=True,
             device=device,
         )
         # This layer stabilizes/speeds up training by preventing vanishing/exploding gradients
-        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim, device=device)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim * 2, device=device)
         self.dropout: nn.Dropout = nn.Dropout(dropout)
-        self.fc: nn.Linear = nn.Linear(
-            hidden_dim,
-            output_dim,
-            device=device,
-        )
+
+        self.fc_1: nn.Linear = nn.Linear(hidden_dim * 2, hidden_dim, device=device)
+        self.relu: nn.ReLU = nn.ReLU()
+        self.fc_2: nn.Linear = nn.Linear(hidden_dim, output_dim, device=device)
 
     def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len = x.shape[0], x.shape[1]
@@ -46,7 +46,10 @@ class StockPredictionModel(nn.Module):
         out = out[:, -1, :]
 
         out = self.layer_norm(out)
-        out = self.fc(self.dropout(out))
+
+        out = self.fc_1(out)
+        out = self.relu(out)
+        out = self.fc_2(out)
 
         return out
 

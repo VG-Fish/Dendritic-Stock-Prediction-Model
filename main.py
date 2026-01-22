@@ -25,7 +25,7 @@ VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0002
 EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
-MODEL_INFO_DIR: Path = Path("improved_lstm_model_info")
+MODEL_INFO_DIR: Path = Path("improved_bidirectional_lstm_model_info")
 
 # ANSI escape codes
 RED: str = "\033[31m"
@@ -168,13 +168,13 @@ def main() -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=5,
-        hidden_dim=32,
-        num_layers=1,
+        hidden_dim=64,
+        num_layers=2,
         output_dim=1,
         dropout=0.2,
         device=device,
     ).to(device)
-    criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=1.0).to(device)
+    criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=2.0).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
