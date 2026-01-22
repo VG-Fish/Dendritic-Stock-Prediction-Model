@@ -37,6 +37,10 @@ class StockPredictionModel(nn.Module):
         )
 
     def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len = x.shape[0], x.shape[1]
+        # We must turn 4d tensor to 3d tensor by flattening all the features into one tensor
+        x = x.view(batch_size, seq_len, -1)
+
         out, _ = self.lstm(x)
 
         out = out[:, -1, :]
