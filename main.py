@@ -25,7 +25,7 @@ VAL_FRACTION: float = 0.1
 BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0002
 EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
-MODEL_INFO_DIR: Path = Path("improved_bidirectional_lstm_model_info")
+MODEL_INFO_DIR: Path = Path("dimensional_bidirectional_lstm_model_info")
 
 # ANSI escape codes
 RED: str = "\033[31m"
@@ -167,7 +167,7 @@ def main() -> None:
     )
 
     model: StockPredictionModel = StockPredictionModel(
-        input_dim=5,
+        input_dim=8,
         hidden_dim=64,
         num_layers=2,
         output_dim=1,
@@ -218,6 +218,7 @@ def main() -> None:
                 break
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
+        plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
     plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
     print("Model training complete!")
 

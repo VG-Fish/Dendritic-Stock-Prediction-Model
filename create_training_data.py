@@ -54,6 +54,20 @@ class NormalizationData:
         return cls(mean=data["mean"], std=data["std"])
 
 
+# Gemini suggestion to improve dimensional accuracy
+# RSI calculates if the stock was overbought
+def compute_rsi(expr: pl.Expr, period: int = 14) -> pl.Expr:
+    delta: pl.Expr = expr.diff()
+    up: pl.Expr = delta.clip(lower_bound=0)
+    down: pl.Expr = -delta.clip(upper_bound=0)
+    # Wilder's Smoothing: alpha = 1/period. In polars ewm_mean, com = 1/alpha - 1
+    # So com = period - 1
+    ma_up: pl.Expr = up.ewm_mean(com=period - 1, ignore_nulls=True)
+    ma_down: pl.Expr = down.ewm_mean(com=period - 1, ignore_nulls=True)
+    rs: pl.Expr = ma_up / ma_down
+    return 100 - (100 / (1 + rs))
+
+
 def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     print(f"Scanning for CSVs in {directory}...")
 
@@ -74,6 +88,15 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
             (pl.col("High").log() - pl.col("Low").log()).alias("Log Range"),
             pl.col("Volume").log().diff().over("Path").alias("Log Volume Change"),
         )
+        .with_columns(
+            compute_rsi(pl.col("Close"), period=14).over("Path").alias("RSI"),
+            (pl.col("Close").ewm_mean(span=12) - pl.col("Close").ewm_mean(span=26))
+            .over("Path")
+            .alias("MACD"),  # MACD tells the LSTM the strength of the trend.
+        )
+        # Calculate MACD Signal line (9 EMA of MACD)
+        # EMA = exponential moving average
+        .with_columns(pl.col("MACD").ewm_mean(span=9).over("Path").alias("MACD Signal"))
         .with_columns(
             pl.col("Log Return")
             .rolling_std(window_size=SEQUENCE_LENGTH)
@@ -97,7 +120,11 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
             pl.col("Log Volume Change").list.slice(0, window_size).alias("Volume"),
             pl.col("Log Range").list.slice(0, window_size).alias("Range"),
             pl.col("Rolling STD").list.slice(0, window_size).alias("Rolling STD"),
+            pl.col("RSI").list.slice(0, window_size),
+            pl.col("MACD").list.slice(0, window_size),
+            pl.col("MACD Signal").list.slice(0, window_size),
         )
+        .drop("Log Return", "Log Overnight", "Log Range", "Log Volume Change")
     )
 
     # Sets up code for splitting up the dataset into train, val, and test datasets
@@ -230,12 +257,16 @@ def create_data_loaders_from(
 
     # Group 3: Range
     train_df, val_df, test_df, _ = fit_and_scale_data(
-        train_df, val_df, test_df, ["Range"]
+        train_df, val_df, test_df, ["Range", "Rolling STD"]
     )
 
-    # Group 4: Rolling STD
+    # Group 4: Oscillators (RSI is 0-100, scale it)
     train_df, val_df, test_df, _ = fit_and_scale_data(
-        train_df, val_df, test_df, ["Rolling STD"]
+        train_df, val_df, test_df, ["RSI"]
+    )
+    # Group 5: MACD
+    train_df, val_df, test_df, _ = fit_and_scale_data(
+        train_df, val_df, test_df, ["MACD", "MACD Signal"]
     )
 
     dataset_directory.mkdir(parents=True, exist_ok=True)

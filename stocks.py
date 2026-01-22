@@ -16,7 +16,8 @@ class NASDAQDataLoaders:
 
 class NASDAQDataset(Dataset):
     def __init__(self: Self, df: pl.DataFrame) -> None:
-        feature_cols: List[str] = ["Close", "Open", "Volume", "Range", "Rolling STD"]
+        feature_cols: List[str] = list(df.columns)
+        feature_cols.remove("Target")
 
         n_samples: int = len(df)
         sequence_length: int = len(df[feature_cols[0]][0])
