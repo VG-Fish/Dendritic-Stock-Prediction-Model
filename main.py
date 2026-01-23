@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 from sklearn.metrics import root_mean_squared_error
-from torch.nn import MSELoss
+from torch.nn import HuberLoss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -23,7 +23,7 @@ RANDOM_SEED: int = 1290
 SEQUENCE_LENGTH: int = 30
 TRAIN_FRACTION: float = 0.8
 VAL_FRACTION: float = 0.1
-BATCH_SIZE: int = 256
+BATCH_SIZE: int = 1024
 LEARNING_RATE: float = 0.0005
 EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
 LOAD_DATASET_FROM_MEMORY: bool = False
@@ -52,7 +52,7 @@ def inverse_transform(data: np.ndarray, stats: NormalizationData) -> np.ndarray:
 def train_step(
     model: StockPredictionModel,
     train_loader: DataLoader,
-    criterion: MSELoss,
+    criterion: HuberLoss,
     optimizer: optim.Adam,
     epoch: int,
 ) -> float:
@@ -182,13 +182,30 @@ def plot_model_performance(
     plt.close(fig)
 
 
+def plot_model_predictions(
+    model: StockPredictionModel, test_dataloader: DataLoader
+) -> None:
+    model.eval()
+    X_sample, y_sample = next(iter(test_dataloader))
+    with torch.no_grad():
+        preds = model(X_sample.to(device)).cpu()
+
+    plt.figure(figsize=(12, 6))
+    plt.plot(preds[:100], label="Predictions")
+    plt.plot(y_sample[:100], label="Actual Target", alpha=0.5)
+    plt.title("Reality Check: Predictions vs Actuals")
+    plt.legend()
+    plt.savefig(MODEL_INFO_DIR / "debug_predictions.png")
+    plt.close()
+
+
 def main() -> None:
     model_save_dir: Path = MODEL_INFO_DIR / "models"
     os.makedirs(model_save_dir, exist_ok=True)
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(
-        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1500
+        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1000
     )
 
     data_loaders, price_stats = create_data_loaders_from(
@@ -198,14 +215,14 @@ def main() -> None:
     )
 
     model: StockPredictionModel = StockPredictionModel(
-        input_dim=8,
+        input_dim=9,
         hidden_dim=64,
-        num_layers=1,
+        num_layers=2,
         output_dim=1,
         dropout=0.2,
         device=device,
     ).to(device)
-    criterion: MSELoss = MSELoss().to(device)
+    criterion: HuberLoss = HuberLoss().to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
@@ -251,8 +268,10 @@ def main() -> None:
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
         plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
+        plot_model_predictions(model, data_loaders.test)
 
     plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
+    plot_model_predictions(model, data_loaders.test)
     print("Model training complete!")
 
     print("\n" + "=" * 30)

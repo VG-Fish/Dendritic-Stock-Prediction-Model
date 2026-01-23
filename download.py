@@ -96,7 +96,7 @@ class NASDAQDownloader:
         stock_data_pd = stock_data_pd.reset_index()
 
         # Only accept CSVs with 6 columns including Date, some have 7 columns
-        if len(stock_data_pd.columns) < 6 or stock_data_pd.empty:
+        if len(stock_data_pd.columns) != 6 or stock_data_pd.empty:
             return symbol, False
 
         try:

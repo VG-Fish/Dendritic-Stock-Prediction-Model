@@ -164,6 +164,11 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
             (pl.col("Close").ewm_mean(span=12) - pl.col("Close").ewm_mean(span=26))
             .over("Path")
             .alias("MACD"),  # MACD tells the LSTM the strength of the trend.
+            # This is a trend feature that allows the model to determine if it's currently a bull or bear market
+            (pl.col("Close") / pl.col("Close").rolling_mean(window_size=50))
+            .log()
+            .over("Path")
+            .alias("SMA Ratio"),
         )
         # Calculate MACD Signal line (9 EMA of MACD)
         # EMA = exponential moving average, which places more weight on more recent data points
@@ -176,6 +181,7 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
         )
         .with_columns(pl.all().exclude("Path", "Date", "Index").cast(pl.Float32))
         .drop("High", "Low", "Date", "Close", "Volume", "Open")
+        .fill_nan(None)
         .drop_nulls()
         .filter(pl.all_horizontal(pl.all().exclude("Path", "Index").is_finite()))
         .rolling(
@@ -195,6 +201,7 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
             pl.col("RSI").list.slice(0, window_size),
             pl.col("MACD").list.slice(0, window_size),
             pl.col("MACD Signal").list.slice(0, window_size),
+            pl.col("SMA Ratio").list.slice(0, window_size).alias("SMA Ratio"),
         )
         .drop("Log Return", "Log Overnight", "Log Range", "Log Volume Change")
         .drop_nulls()
@@ -206,32 +213,32 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     # Test dataset gets the rest of the points. We don't sort the data before doing
     # all of these operations as the data should already be sorted from above.
     # (.rolling() assumes the data is sorted, anyway.)
-    df: pl.DataFrame = (
-        lf.collect()
-        .sort(["Path", "Index"])
-        .with_columns(
-            (pl.int_range(0, pl.len()).over("Path") / pl.len().over("Path")).alias(
-                "Quantile"
-            )
-        )
+    df: pl.DataFrame = lf.collect().sort(["Path", "Index"])
+
+    all_paths: pl.DataFrame = (
+        df.select("Path").unique().sample(fraction=1.0, shuffle=True, seed=RANDOM_SEED)
     )
 
-    train_df: pl.DataFrame = df.filter(pl.col("Quantile") < TRAIN_FRACTION)
+    # This splits the dataset by ticker, so some companies may be excluded from some datasets
+    # This forces to model to generalize
+    n_stocks: int = len(all_paths)
+    train_end = int(n_stocks * TRAIN_FRACTION)
+    val_end = int(n_stocks * (TRAIN_FRACTION + VAL_FRACTION))
 
-    val_df: pl.DataFrame = df.filter(
-        (pl.col("Quantile") >= TRAIN_FRACTION)
-        & (pl.col("Quantile") < (TRAIN_FRACTION + VAL_FRACTION))
-    )
+    train_paths: pl.DataFrame = all_paths[:train_end]
+    val_paths: pl.DataFrame = all_paths[train_end:val_end]
+    test_paths: pl.DataFrame = all_paths[val_end:]
 
-    test_df: pl.DataFrame = df.filter(
-        pl.col("Quantile") >= (TRAIN_FRACTION + VAL_FRACTION)
+    columns_to_drop: List[str] = ["Path", "Index"]
+    train_df: pl.DataFrame = df.join(train_paths, on="Path", how="inner").drop(
+        columns_to_drop
     )
-
-    train_df = train_df.drop("Path", "Index", "Quantile").sample(
-        fraction=1.0, shuffle=True, seed=RANDOM_SEED
+    val_df: pl.DataFrame = df.join(val_paths, on="Path", how="inner").drop(
+        columns_to_drop
     )
-    val_df = val_df.drop("Path", "Index", "Quantile")
-    test_df = test_df.drop("Path", "Index", "Quantile")
+    test_df: pl.DataFrame = df.join(test_paths, on="Path", how="inner").drop(
+        columns_to_drop
+    )
 
     print(
         f"Created datasets: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}"
@@ -279,7 +286,7 @@ def _create_dataloader(df: pl.DataFrame) -> DataLoader:
     return DataLoader(
         NASDAQDataset(df),
         batch_size=BATCH_SIZE,
-        num_workers=1,
+        num_workers=4,
         persistent_workers=True,
     )
 
