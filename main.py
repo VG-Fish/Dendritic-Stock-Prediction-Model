@@ -9,13 +9,14 @@ import torch
 import torch.optim as optim
 from matplotlib.axes import Axes
 from sklearn.metrics import root_mean_squared_error
+from torch.nn import HuberLoss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
 from create_training_data import NormalizationData, create_data_loaders_from
 from download import NASDAQDatasetInfo, NASDAQDownloader, SecurityType
-from model import DirectionalMSELoss, StockPredictionModel
+from model import StockPredictionModel
 
 # Initialize important variables
 RANDOM_SEED: int = 1290
@@ -26,7 +27,7 @@ BATCH_SIZE: int = 256
 LEARNING_RATE: float = 0.0002
 EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
 LOAD_DATASET_FROM_MEMORY: bool = False
-MODEL_INFO_DIR: Path = Path("dimensional_bidirectional_lstm_model_info")
+MODEL_INFO_DIR: Path = Path("simplified_lstm_model_info")
 
 # ANSI escape codes
 RED: str = "\033[31m"
@@ -48,7 +49,7 @@ def inverse_transform(data: np.ndarray, stats: NormalizationData) -> np.ndarray:
 def train_step(
     model: StockPredictionModel,
     train_loader: DataLoader,
-    criterion: DirectionalMSELoss,
+    criterion: HuberLoss,
     optimizer: optim.Adam,
     epoch: int,
 ) -> float:
@@ -146,7 +147,7 @@ def plot_model_performance(
 
     color = "tab:blue"
     ax1.set_xlabel("Epochs")
-    ax1.set_ylabel("Training Loss (MSE)", color=color)
+    ax1.set_ylabel("Training Loss (Huber)", color=color)
     ax1.plot(all_losses, color=color, label="Train Loss")
     ax1.tick_params(axis="y", labelcolor=color)
 
@@ -169,6 +170,7 @@ def plot_model_performance(
 
     fig.tight_layout()
     plt.savefig(MODEL_INFO_DIR / "baseline_model_performance.png")
+    plt.close(fig)
 
 
 def main() -> None:
@@ -177,7 +179,7 @@ def main() -> None:
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(
-        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1000
+        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1500
     )
 
     data_loaders, price_stats = create_data_loaders_from(
@@ -188,17 +190,17 @@ def main() -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=8,
-        hidden_dim=128,
-        num_layers=2,
+        hidden_dim=32,
+        num_layers=1,
         output_dim=1,
-        dropout=0.25,
+        dropout=0.5,
         device=device,
     ).to(device)
-    criterion: DirectionalMSELoss = DirectionalMSELoss(penalty_factor=2.0).to(device)
+    criterion: HuberLoss = HuberLoss().to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
-        weight_decay=1e-4,  # Weight decay penalizes large weights
+        weight_decay=1e-3,  # Weight decay penalizes large weights
     )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,

@@ -132,8 +132,21 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     window_size: int = SEQUENCE_LENGTH - 1
     glob: List = list(directory.glob("*.csv"))
     print(f"Going through {len(glob)} CSVs...")
+    schema_overrides: Dict[str, type] = {
+        "Open": pl.Float64,
+        "High": pl.Float64,
+        "Low": pl.Float64,
+        "Close": pl.Float64,
+        "Volume": pl.Float64,
+    }
+
     lf: pl.LazyFrame = (
-        pl.scan_csv(glob, include_file_paths="Path", try_parse_dates=True)
+        pl.scan_csv(
+            glob,
+            include_file_paths="Path",
+            try_parse_dates=True,
+            schema_overrides=schema_overrides,
+        )
         .sort(["Path", "Date"])
         # We must remove rows where Volume = 0 as log(0) = -inf
         .filter(~pl.any_horizontal(pl.col("Volume") == 0))

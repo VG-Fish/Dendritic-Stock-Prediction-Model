@@ -25,18 +25,16 @@ class StockPredictionModel(nn.Module):
             hidden_dim,
             num_layers,
             batch_first=True,
-            bidirectional=True,
             device=device,
         )
         # Doing bidirectional = True doubles the amount of hidden units
-        num_hidden_units: int = hidden_dim * 2
         # This layer stabilizes/speeds up training by preventing vanishing/exploding gradients
-        self.layer_norm: nn.LayerNorm = nn.LayerNorm(num_hidden_units, device=device)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim, device=device)
         self.dropout: nn.Dropout = nn.Dropout(dropout)
 
-        self.fc_1: nn.Linear = nn.Linear(num_hidden_units, hidden_dim, device=device)
+        self.fc_1: nn.Linear = nn.Linear(hidden_dim, hidden_dim // 2, device=device)
         self.relu: nn.ReLU = nn.ReLU()
-        self.fc_2: nn.Linear = nn.Linear(hidden_dim, output_dim, device=device)
+        self.fc_2: nn.Linear = nn.Linear(hidden_dim // 2, output_dim, device=device)
 
     def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len = x.shape[0], x.shape[1]
