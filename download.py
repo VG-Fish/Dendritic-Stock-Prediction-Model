@@ -84,6 +84,7 @@ class NASDAQDownloader:
 
             if stock_data_pd is None or stock_data_pd.empty:
                 continue
+            # We're good to break now as everything downloaded successfully
             break
 
         if stock_data_pd is None:
@@ -113,6 +114,14 @@ class NASDAQDownloader:
         stop_if_dest_dir_exists: bool = True,
         target: Optional[int] = None,
     ) -> NASDAQDatasetInfo:
+        def submit_new_task(
+            pending_futures: Dict, candidate_rows: List, idx: int
+        ) -> int:
+            symbol, etf_flag = candidate_rows[idx]
+            future = executor.submit(self._process_symbol, symbol, etf_flag == "Y")
+            pending_futures[future] = idx
+            return idx + 1
+
         if stop_if_dest_dir_exists and os.path.exists(self.data_directory):
             print(f"Directory {self.data_directory} exists. Skipping download.")
             return self._dataset_info
@@ -147,10 +156,7 @@ class NASDAQDownloader:
             success_count: int = 0
 
             while next_idx < target_downloads:
-                symbol, etf_flag = candidate_rows[next_idx]
-                future = executor.submit(self._process_symbol, symbol, etf_flag == "Y")
-                pending_futures[future] = next_idx
-                next_idx += 1
+                next_idx = submit_new_task(pending_futures, candidate_rows, next_idx)
 
             with tqdm(
                 total=target_downloads,
@@ -167,26 +173,20 @@ class NASDAQDownloader:
                         _ = pending_futures.pop(future)
 
                         is_success: bool
-                        sym_result: str = ""
+                        symbol: str = ""
                         try:
-                            sym_result, is_success = future.result()
+                            symbol, is_success = future.result()
                         except Exception:
                             is_success = False
 
                         if is_success:
                             success_count += 1
-                            valid_symbols.append(sym_result)
+                            valid_symbols.append(symbol)
                             pbar.update(1)
-                        else:
-                            if next_idx < total_available:
-                                new_symbol, new_etf_flag = candidate_rows[next_idx]
-                                new_future = executor.submit(
-                                    self._process_symbol,
-                                    new_symbol,
-                                    new_etf_flag == "Y",
-                                )
-                                pending_futures[new_future] = next_idx
-                                next_idx += 1
+                        elif next_idx < total_available:
+                            next_idx = submit_new_task(
+                                pending_futures, candidate_rows, next_idx
+                            )
 
                 # If we hit the target, cancel any remaining tasks
                 for f in pending_futures:
