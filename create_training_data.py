@@ -1,7 +1,7 @@
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Self, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import polars as pl
 import torch
@@ -26,31 +26,6 @@ class SplitDFDatasets:
     train: pl.DataFrame
     val: pl.DataFrame
     test: pl.DataFrame
-
-
-@dataclass
-class NormalizationData:
-    mean: float
-    std: float
-
-    def write_to_disc(self: Self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(f"mean={self.mean}\nstd={self.std}")
-
-    @classmethod
-    def read_from_disc(cls: type, path: Path) -> "NormalizationData":
-        if not path.exists():
-            raise FileNotFoundError(f"Normalization file not found at {path}")
-
-        data: Dict[str, float] = {}
-        with open(path, "r") as f:
-            for line in f:
-                if "=" in line:
-                    key, val = line.strip().split("=")
-                    data[key] = float(val)
-
-        return cls(mean=data["mean"], std=data["std"])
 
 
 # Gemini suggested function
@@ -247,41 +222,6 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     return SplitDFDatasets(train_df, val_df, test_df)
 
 
-def fit_and_scale_data(
-    train: pl.DataFrame, val: pl.DataFrame, test: pl.DataFrame, col_group: List[str]
-) -> Tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, NormalizationData]:
-    print(f"Scaling columns {', '.join(col_group)} in datasets...")
-
-    series_to_concat: List[pl.Series] = []
-    for col_name in col_group:
-        dtype: pl.DataType = train[col_name].dtype
-
-        if isinstance(dtype, pl.List):
-            series_to_concat.append(train[col_name].list.explode())
-        else:
-            series_to_concat.append(train[col_name])
-
-    combined_data: pl.Series = pl.concat(series_to_concat)
-
-    mean: float = float(combined_data.mean())  # pyright: ignore[reportArgumentType]
-    std: float = float(combined_data.std())  # pyright: ignore[reportArgumentType]
-
-    # Avoid division by zero
-    if std == 0:
-        std = 1.0
-
-    def standardize_column(col_name: str) -> pl.Expr:
-        return (pl.col(col_name) - mean) / std
-
-    train = train.with_columns([standardize_column(c) for c in col_group])
-    val = val.with_columns([standardize_column(c) for c in col_group])
-    test = test.with_columns([standardize_column(c) for c in col_group])
-
-    normalization_data: NormalizationData = NormalizationData(mean, std)
-
-    return train, val, test, normalization_data
-
-
 def _create_dataloader(df: pl.DataFrame) -> DataLoader:
     return DataLoader(
         NASDAQDataset(df),
@@ -312,7 +252,7 @@ def create_data_loaders_from(
     directory: Path,
     save_directory: Path,
     load_datasets_from_memory: bool = False,
-) -> Tuple[NASDAQDataLoaders, NormalizationData]:
+) -> NASDAQDataLoaders:
     dataset_directory = save_directory / "scaled_datasets"
     norm_file_path = dataset_directory / "normalization_data.txt"
 
@@ -327,9 +267,8 @@ def create_data_loaders_from(
         train_df: pl.DataFrame = pl.read_parquet(dataset_directory / "train.parquet")
         val_df: pl.DataFrame = pl.read_parquet(dataset_directory / "val.parquet")
         test_df: pl.DataFrame = pl.read_parquet(dataset_directory / "test.parquet")
-        normalization_data = NormalizationData.read_from_disc(norm_file_path)
 
-        return _create_data_loaders(train_df, val_df, test_df), normalization_data
+        return _create_data_loaders(train_df, val_df, test_df)
 
     datasets: SplitDFDatasets = _create_datasets_from(directory)
 
@@ -337,39 +276,13 @@ def create_data_loaders_from(
     val_df = datasets.val
     test_df = datasets.test
 
-    # Group 1: Open, Close, Target
-    # We choose related groups to scale all of them together
-    train_df, val_df, test_df, price_norm = fit_and_scale_data(
-        train_df, val_df, test_df, ["Close", "Open", "Target"]
-    )
-
-    # Group 2: Volume
-    train_df, val_df, test_df, _ = fit_and_scale_data(
-        train_df, val_df, test_df, ["Volume"]
-    )
-
-    # Group 3: Range
-    train_df, val_df, test_df, _ = fit_and_scale_data(
-        train_df, val_df, test_df, ["Range", "Rolling STD"]
-    )
-
-    # Group 4: Oscillators (RSI is 0-100, scale it)
-    train_df, val_df, test_df, _ = fit_and_scale_data(
-        train_df, val_df, test_df, ["RSI"]
-    )
-    # Group 5: MACD
-    train_df, val_df, test_df, _ = fit_and_scale_data(
-        train_df, val_df, test_df, ["MACD", "MACD Signal"]
-    )
-
     dataset_directory.mkdir(parents=True, exist_ok=True)
-    print("Saving datasets...")
+    print("Saving datasets (Unscaled for Instance Norm)...")
     train_df.write_parquet(dataset_directory / "train.parquet")
     val_df.write_parquet(dataset_directory / "val.parquet")
     test_df.write_parquet(dataset_directory / "test.parquet")
-    price_norm.write_to_disc(norm_file_path)
 
-    return _create_data_loaders(train_df, val_df, test_df), price_norm
+    return _create_data_loaders(train_df, val_df, test_df)
 
 
 def float_in_range(low: float, high: float) -> Callable:

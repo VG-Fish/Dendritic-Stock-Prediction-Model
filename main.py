@@ -14,7 +14,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
-from create_training_data import NormalizationData, create_data_loaders_from
+from create_training_data import create_data_loaders_from
 from download import NASDAQDatasetInfo, NASDAQDownloader, SecurityType
 from model import StockPredictionModel
 
@@ -43,10 +43,6 @@ elif torch.mps.is_available():
 
 # Saves resources by using a different backend for rendering graphs
 matplotlib.use("Agg")
-
-
-def inverse_transform(data: np.ndarray, stats: NormalizationData) -> np.ndarray:
-    return (data * stats.std) + stats.mean
 
 
 def train_step(
@@ -88,7 +84,6 @@ def train_step(
 def evaluate(
     model: StockPredictionModel,
     loader: DataLoader,
-    price_stats: NormalizationData,
     desc: str = "Evaluating",
 ) -> Tuple[float, float]:
     model.eval()
@@ -105,15 +100,8 @@ def evaluate(
             all_predictions.append(output.cpu())
             all_targets.append(y.cpu())
 
-    final_predictions_scaled: torch.Tensor = torch.vstack(all_predictions)
-    final_targets_scaled: torch.Tensor = torch.vstack(all_targets)
-
-    final_predictions: np.ndarray = inverse_transform(
-        final_predictions_scaled.numpy(), price_stats
-    )
-    final_targets: np.ndarray = inverse_transform(
-        final_targets_scaled.numpy(), price_stats
-    )
+    final_predictions: torch.Tensor = torch.vstack(all_predictions)
+    final_targets: torch.Tensor = torch.vstack(all_targets)
 
     dim_correct: np.ndarray = np.sign(final_predictions) == np.sign(final_targets)
     dim_accuracy: float = np.mean(dim_correct).item()
@@ -125,13 +113,10 @@ def evaluate(
 def val_step(
     model: StockPredictionModel,
     val_loader: DataLoader,
-    price_stats: NormalizationData,
     scheduler: ReduceLROnPlateau,
     epoch: int,
 ) -> Tuple[float, float]:
-    val_rmse, dim_accuracy = evaluate(
-        model, val_loader, price_stats, desc=f"Val Epoch {epoch}"
-    )
+    val_rmse, dim_accuracy = evaluate(model, val_loader, desc=f"Val Epoch {epoch}")
 
     print(f"\nCurrent Dimensional Accuracy: {dim_accuracy:.3%}")
     print(f"Current RMSE: {val_rmse}")
@@ -208,7 +193,7 @@ def main() -> None:
         SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1000
     )
 
-    data_loaders, price_stats = create_data_loaders_from(
+    data_loaders = create_data_loaders_from(
         info.stocks_directory,
         MODEL_INFO_DIR,
         load_datasets_from_memory=LOAD_DATASET_FROM_MEMORY,
@@ -248,9 +233,7 @@ def main() -> None:
         )
         all_losses.append(losses)
 
-        rsme, dim_accuracy = val_step(
-            model, data_loaders.val, price_stats, scheduler, epoch
-        )
+        rsme, dim_accuracy = val_step(model, data_loaders.val, scheduler, epoch)
         all_rmse.append(rsme)
         all_dim_accuracies.append(dim_accuracy)
 
@@ -282,9 +265,7 @@ def main() -> None:
     print(f"Loading best model from: {best_model_path}")
     model.load_state_dict(torch.load(best_model_path))
 
-    test_rmse, test_acc = evaluate(
-        model, data_loaders.test, price_stats, desc="Testing model"
-    )
+    test_rmse, test_acc = evaluate(model, data_loaders.test, desc="Testing model")
 
     print(f"\nFinal Test RMSE: {test_rmse:.5f}")
     print(f"Final Test Directional Accuracy: {test_acc:.3%}")

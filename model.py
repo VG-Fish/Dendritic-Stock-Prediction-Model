@@ -38,20 +38,31 @@ class StockPredictionModel(nn.Module):
 
     def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len = x.shape[0], x.shape[1]
-        # We must turn 4d tensor to 3d tensor by flattening all the features into one tensor
-        x = x.view(batch_size, seq_len, -1)
 
-        out, _ = self.lstm(x)
+        # Doing instance normalization for each input tensor to force the model to generalize
+        x_mean: torch.Tensor = x.mean(dim=1, keepdim=True)
+        x_std: torch.Tensor = (
+            x.std(dim=1, keepdim=True) + 1e-5
+        )  # epsilon to avoid div/0
+
+        x_norm: torch.Tensor = (x - x_mean) / x_std
+        x_norm_flat: torch.Tensor = x_norm.view(batch_size, seq_len, -1)
+
+        out, _ = self.lstm(x_norm_flat)
 
         out = out[:, -1, :]
-
         out = self.layer_norm(out)
 
         out = self.fc_1(out)
         out = self.relu(out)
         out = self.fc_2(out)
 
-        return out
+        # Denormalize out and rescale to match the original magnitude
+        target_std: torch.Tensor = x_std[:, :, 0]
+        target_mean: torch.Tensor = x_mean[:, :, 0]
+        out_rescaled: torch.Tensor = (out * target_std) + target_mean
+
+        return out_rescaled
 
 
 class DirectionalMSELoss(nn.Module):
