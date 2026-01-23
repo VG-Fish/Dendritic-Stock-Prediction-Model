@@ -47,7 +47,7 @@ class StockPredictionModel(nn.Module):
         # This technique is called RevIN
         x_mean: torch.Tensor = x.mean(dim=1, keepdim=True)
         x_std: torch.Tensor = (
-            x.std(dim=1, keepdim=True) + 1e-5
+            x.std(dim=1, keepdim=True) + 1e-3
         )  # epsilon to avoid div/0
 
         x_norm: torch.Tensor = (x - x_mean) / x_std

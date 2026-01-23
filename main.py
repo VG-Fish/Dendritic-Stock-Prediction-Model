@@ -6,15 +6,16 @@ from typing import Callable, List, Tuple
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
+import torch.nn as nn
 import torch.optim as optim
-from torch.nn import HuberLoss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import Dataset, RandomSampler
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
 from create_training_data import create_data_loaders_from
 from download import NASDAQDatasetInfo, NASDAQDownloader, SecurityType
-from model import StockPredictionModel
+from model import DirectionalMSELoss, StockPredictionModel
 
 # Initialize important variables
 RANDOM_SEED: int = 1290
@@ -25,7 +26,7 @@ BATCH_SIZE: int = 1024
 LEARNING_RATE: float = 0.0005
 EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
 LOAD_DATASET_FROM_MEMORY: bool = False
-MODEL_INFO_DIR: Path = Path("simplified_lstm_model_info")
+MODEL_INFO_DIR: Path = Path("lstm_model_info")
 
 # ANSI escape codes
 RED: str = "\033[31m"
@@ -46,7 +47,7 @@ matplotlib.use("Agg")
 def train_step(
     model: StockPredictionModel,
     train_loader: DataLoader,
-    criterion: HuberLoss,
+    criterion: nn.Module,
     optimizer: optim.Adam,
     epoch: int,
 ) -> float:
@@ -141,7 +142,7 @@ def plot_model_performance(
 
     color = "tab:blue"
     ax1.set_xlabel("Epochs")
-    ax1.set_ylabel("Training Loss (Huber)", color=color)
+    ax1.set_ylabel("Training Loss", color=color)
     l1 = ax1.plot(all_losses, color=color, label="Train Loss")
     ax1.tick_params(axis="y", labelcolor=color)
 
@@ -173,11 +174,20 @@ def plot_model_performance(
     plt.close(fig)
 
 
-def plot_model_predictions(
-    model: StockPredictionModel, test_dataloader: DataLoader
+def plot_model_predictions_over_targets(
+    model: StockPredictionModel, test_dataset: Dataset, epoch: int
 ) -> None:
     model.eval()
-    X_sample, y_sample = next(iter(test_dataloader))
+
+    sampler = RandomSampler(
+        test_dataset,  # pyright: ignore[reportArgumentType]
+        replacement=False,
+    )
+    dataloader_with_sampler = DataLoader(
+        test_dataset, batch_size=BATCH_SIZE, sampler=sampler
+    )
+    X_sample, y_sample = next(iter(dataloader_with_sampler))
+
     with torch.no_grad():
         predictions, _, _ = model(X_sample.to(device))
         predictions = predictions.cpu()
@@ -187,7 +197,11 @@ def plot_model_predictions(
     plt.plot(y_sample[:100], label="Actual Target", alpha=0.5)
     plt.title("Predictions vs Actuals")
     plt.legend()
-    plt.savefig(MODEL_INFO_DIR / "debug_predictions.png")
+
+    debug_directory: Path = MODEL_INFO_DIR / "debug_predictions"
+    os.makedirs(debug_directory, exist_ok=True)
+    plt.savefig(debug_directory / f"epoch_{epoch}.png")
+
     plt.close()
 
 
@@ -197,7 +211,7 @@ def main() -> None:
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(
-        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1000
+        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1500
     )
 
     data_loaders = create_data_loaders_from(
@@ -215,7 +229,7 @@ def main() -> None:
         target_feature_idx=5,
         device=device,
     ).to(device)
-    criterion: HuberLoss = HuberLoss().to(device)
+    criterion: nn.Module = DirectionalMSELoss(penalty_factor=5).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
@@ -259,10 +273,8 @@ def main() -> None:
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
         plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
-        plot_model_predictions(model, data_loaders.test)
+        plot_model_predictions_over_targets(model, data_loaders.test.dataset, epoch)
 
-    plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
-    plot_model_predictions(model, data_loaders.test)
     print("Model training complete!")
 
     print("\n" + "=" * 30)

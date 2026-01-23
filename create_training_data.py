@@ -158,7 +158,12 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
         .drop("High", "Low", "Date", "Close", "Volume", "Open")
         .fill_nan(None)
         .drop_nulls()
-        .filter(pl.all_horizontal(pl.all().exclude("Path", "Index").is_finite()))
+        .filter(
+            pl.all_horizontal(pl.all().exclude("Path", "Index").is_finite()),
+            # Remove penny stocks that have very low standard deviations as having them makes the
+            # loss explode
+            pl.col("Rolling STD") > 1e-4,
+        )
         .rolling(
             index_column="Index",
             period=f"{SEQUENCE_LENGTH}i",
@@ -222,26 +227,25 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     return SplitDFDatasets(train_df, val_df, test_df)
 
 
-def _create_data_loader(df: pl.DataFrame) -> DataLoader:
+def _create_dataloader(df: pl.DataFrame) -> DataLoader:
     return DataLoader(
         NASDAQDataset(df),
         batch_size=BATCH_SIZE,
-        num_workers=1,
-        persistent_workers=True,
+        num_workers=0,
     )
 
 
-def _create_data_loaders(
+def _create_dataloaders(
     train_df: pl.DataFrame, val_df: pl.DataFrame, test_df: pl.DataFrame
 ) -> NASDAQDataLoaders:
     print("Creating training data loader...")
-    train_loader = _create_data_loader(train_df)
+    train_loader = _create_dataloader(train_df)
 
     print("Creating validation data loader...")
-    val_loader = _create_data_loader(val_df)
+    val_loader = _create_dataloader(val_df)
 
     print("Creating test data loader...")
-    test_loader = _create_data_loader(test_df)
+    test_loader = _create_dataloader(test_df)
 
     print("Finished creating PyTorch DataLoaders!")
 
@@ -268,7 +272,7 @@ def create_data_loaders_from(
         val_df: pl.DataFrame = pl.read_parquet(dataset_directory / "val.parquet")
         test_df: pl.DataFrame = pl.read_parquet(dataset_directory / "test.parquet")
 
-        return _create_data_loaders(train_df, val_df, test_df)
+        return _create_dataloaders(train_df, val_df, test_df)
 
     datasets: SplitDFDatasets = _create_datasets_from(directory)
 
@@ -282,7 +286,7 @@ def create_data_loaders_from(
     val_df.write_parquet(dataset_directory / "val.parquet")
     test_df.write_parquet(dataset_directory / "test.parquet")
 
-    return _create_data_loaders(train_df, val_df, test_df)
+    return _create_dataloaders(train_df, val_df, test_df)
 
 
 def float_in_range(low: float, high: float) -> Callable:
