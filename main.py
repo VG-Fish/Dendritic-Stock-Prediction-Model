@@ -5,10 +5,8 @@ from typing import Callable, List, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import torch.optim as optim
-from sklearn.metrics import root_mean_squared_error
 from torch.nn import HuberLoss
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data.dataloader import DataLoader
@@ -62,8 +60,10 @@ def train_step(
 
         # This adds mixed amp precision for faster training
         with torch.autocast(device_type=device.type, dtype=torch.float16):
-            y_train_pred = model(X_train)
-            loss = criterion(y_train_pred, y_train)
+            # Gemini suggested outputs for stable Z-score
+            pred_norm, mean, std = model(X_train)
+            y_train_norm: torch.Tensor = (y_train - mean) / std
+            loss: torch.Tensor = criterion(pred_norm, y_train_norm)
 
         train_loss += loss.item()
 
@@ -95,17 +95,23 @@ def evaluate(
             X = X.to(device)
             y = y.to(device)
 
-            output: torch.Tensor = model(X)
+            # Gemini suggested z-score stuff
+            pred_norm, mean, std = model(X)
+            pred_real: torch.Tensor = (pred_norm * std) + mean
 
-            all_predictions.append(output.cpu())
+            all_predictions.append(pred_real.cpu())
             all_targets.append(y.cpu())
 
     final_predictions: torch.Tensor = torch.vstack(all_predictions)
     final_targets: torch.Tensor = torch.vstack(all_targets)
 
-    dim_correct: np.ndarray = np.sign(final_predictions) == np.sign(final_targets)
-    dim_accuracy: float = np.mean(dim_correct).item()
-    rmse: float = root_mean_squared_error(final_targets, final_predictions)
+    dim_correct: torch.Tensor = torch.sign(final_predictions) == torch.sign(
+        final_targets
+    )
+    dim_accuracy: float = torch.mean(dim_correct.float()).item()
+    rmse: float = torch.sqrt(
+        torch.nn.functional.mse_loss(final_targets, final_predictions)
+    ).item()
 
     return rmse, dim_accuracy
 
@@ -173,12 +179,13 @@ def plot_model_predictions(
     model.eval()
     X_sample, y_sample = next(iter(test_dataloader))
     with torch.no_grad():
-        preds = model(X_sample.to(device)).cpu()
+        predictions, _, _ = model(X_sample.to(device))
+        predictions = predictions.cpu()
 
     plt.figure(figsize=(12, 6))
-    plt.plot(preds[:100], label="Predictions")
+    plt.plot(predictions[:100], label="Predictions")
     plt.plot(y_sample[:100], label="Actual Target", alpha=0.5)
-    plt.title("Reality Check: Predictions vs Actuals")
+    plt.title("Predictions vs Actuals")
     plt.legend()
     plt.savefig(MODEL_INFO_DIR / "debug_predictions.png")
     plt.close()
@@ -205,6 +212,7 @@ def main() -> None:
         num_layers=2,
         output_dim=1,
         dropout=0.2,
+        target_feature_idx=5,
         device=device,
     ).to(device)
     criterion: HuberLoss = HuberLoss().to(device)

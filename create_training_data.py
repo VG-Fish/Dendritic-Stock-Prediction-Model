@@ -222,11 +222,11 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     return SplitDFDatasets(train_df, val_df, test_df)
 
 
-def _create_dataloader(df: pl.DataFrame) -> DataLoader:
+def _create_data_loader(df: pl.DataFrame) -> DataLoader:
     return DataLoader(
         NASDAQDataset(df),
         batch_size=BATCH_SIZE,
-        num_workers=4,
+        num_workers=1,
         persistent_workers=True,
     )
 
@@ -235,13 +235,13 @@ def _create_data_loaders(
     train_df: pl.DataFrame, val_df: pl.DataFrame, test_df: pl.DataFrame
 ) -> NASDAQDataLoaders:
     print("Creating training data loader...")
-    train_loader = _create_dataloader(train_df)
+    train_loader = _create_data_loader(train_df)
 
     print("Creating validation data loader...")
-    val_loader = _create_dataloader(val_df)
+    val_loader = _create_data_loader(val_df)
 
     print("Creating test data loader...")
-    test_loader = _create_dataloader(test_df)
+    test_loader = _create_data_loader(test_df)
 
     print("Finished creating PyTorch DataLoaders!")
 
@@ -277,7 +277,7 @@ def create_data_loaders_from(
     test_df = datasets.test
 
     dataset_directory.mkdir(parents=True, exist_ok=True)
-    print("Saving datasets (Unscaled for Instance Norm)...")
+    print("Saving datasets...")
     train_df.write_parquet(dataset_directory / "train.parquet")
     val_df.write_parquet(dataset_directory / "val.parquet")
     test_df.write_parquet(dataset_directory / "test.parquet")
