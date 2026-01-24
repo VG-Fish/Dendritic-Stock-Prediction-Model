@@ -142,10 +142,12 @@ def evaluate(
     )
     classification_report_df: pl.DataFrame = pl.DataFrame(report)
     if epoch:
+        classification_report_directory: Path = (
+            model.config.model_info_dir / "classification_reports"
+        )
+        os.makedirs(classification_report_directory, exist_ok=True)
         classification_report_df.write_json(
-            model.config.model_info_dir
-            / "classification_reports"
-            / f"report_{epoch}.json"
+            classification_report_directory / f"report_{epoch}.json"
         )
 
     return avg_loss, accuracy
@@ -281,6 +283,24 @@ def plot_model_test_performance(
         confusion_matrix=cm, display_labels=["Down", "Up"]
     )
     display.plot(cmap="Blues", ax=ax2, colorbar=True)
+    threshold: float = cm.max() / 2.0
+
+    # Add labels to confusion matrix
+    text_labels: List[Tuple[int, int, str]] = [
+        (0, 0, f"True Neg\n{cm[0, 0]}"),
+        (0, 1, f"False Pos\n{cm[0, 1]}"),
+        (1, 0, f"False Neg\n{cm[1, 0]}"),
+        (1, 1, f"True Pos\n{cm[1, 1]}"),
+    ]
+
+    # Clear existing text (optional, or just draw over it)
+    for text in display.text_.ravel():  # pyright: ignore[reportOptionalMemberAccess]
+        text.set_text("")
+
+    for x, y, label in text_labels:
+        color = "white" if cm[y, x] > threshold else "black"
+        ax2.text(x, y, label, ha="center", va="center", color=color, fontweight="bold")
+
     ax2.set_title("Confusion Matrix (Normalized)")
     ax2.set_ylabel("True Label")
     ax2.set_xlabel("Predicted Label")
@@ -298,10 +318,17 @@ def clean_dataset_directory() -> None:
         print(f"Cleaning {debug_directory}...")
         shutil.rmtree(debug_directory)
 
-    model_directory: Path = model_config.model_info_dir / "model_predictions"
+    model_directory: Path = model_config.model_info_dir / "models"
     if model_directory.exists():
         print(f"Cleaning {model_directory}...")
         shutil.rmtree(model_directory)
+
+    classification_report_directory: Path = (
+        model_config.model_info_dir / "classification_reports"
+    )
+    if classification_report_directory.exists():
+        print(f"Cleaning {classification_report_directory}...")
+        shutil.rmtree(classification_report_directory)
 
     model_performance_csv: Path = model_config.model_info_dir / "model_performance.csv"
     if model_performance_csv.exists():
