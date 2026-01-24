@@ -53,6 +53,8 @@ def train_step(
     train_loader: DataLoader,
     criterion: nn.Module,
     optimizer: optim.Adam,
+    # Dynamically scales loss values, thus keeps the model stable when using AMP
+    scaler: torch.GradScaler,
     epoch: int,
 ) -> float:
     model.train()
@@ -67,16 +69,19 @@ def train_step(
             device_type=device.type, dtype=torch.float16, cache_enabled=True
         ):
             logits: torch.Tensor = model(X_train)
-
             loss: torch.Tensor = criterion(logits, y_train)
 
-        train_loss += loss.item()
-
-        optimizer.zero_grad()
-        loss.backward()
-
+        # Scale loss up so gradients don't vanish
+        scaler.scale(loss).backward()
+        # Must unscale before clipping gradients
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+
+        scaler.step(optimizer)
+        scaler.update()
+
+        train_loss += loss.item()
+        optimizer.zero_grad()
 
     epoch_loss: float = train_loss / len(train_loader)
     print(f"\nCurrent Training Loss: {epoch_loss}")
@@ -161,7 +166,7 @@ def val_step(
     )
 
     print(f"\nCurrent Accuracy: {val_accuracy:.3%}")
-    print(f"Current Loss: {val_loss}")
+    print(f"Current Val Loss: {val_loss}")
 
     scheduler.step(val_loss)
 
@@ -316,7 +321,7 @@ def main(model_config: ModelConfig) -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
-        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REUSE,
         target=model_config.num_training_files,
     )
 
@@ -356,6 +361,7 @@ def main(model_config: ModelConfig) -> None:
         factor=0.5,
         patience=10,
     )
+    scaler: torch.GradScaler = torch.GradScaler(device=device.type)
 
     all_training_losses: List[float] = []
     all_val_losses: List[float] = []
@@ -369,13 +375,14 @@ def main(model_config: ModelConfig) -> None:
             data_loaders.train,
             criterion,
             optimizer,
+            scaler,
             epoch,
         )
         all_training_losses.append(losses)
 
         loss, accuracy = val_step(model, data_loaders.val, criterion, scheduler, epoch)
-        all_training_losses.append(loss)
-        all_val_losses.append(accuracy)
+        all_val_losses.append(loss)
+        all_accuracies.append(accuracy)
 
         if loss < best_loss:
             best_loss = loss

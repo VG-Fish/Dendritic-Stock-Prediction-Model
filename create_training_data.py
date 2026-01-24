@@ -215,7 +215,7 @@ class TrainingDataCreator:
     ) -> NASDAQDataLoaders:
         dataset_directory = save_directory / "scaled_datasets"
 
-        if load_datasets_from_memory:
+        if load_datasets_from_memory and dataset_directory.exists():
             print("Loading datasets from memory...")
 
             train_df: pl.DataFrame = pl.read_parquet(
