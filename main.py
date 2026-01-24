@@ -57,12 +57,15 @@ def train_step(
         X_train = X_train.to(device)
         y_train = y_train.to(device)
 
-        prediations_normalized, mean, std = model(X_train)
+        with torch.autocast(
+            device_type=device.type, dtype=torch.float16, cache_enabled=True
+        ):
+            prediations_normalized, mean, std = model(X_train)
 
-        # Denormalizing predictions
-        predictions_real = (prediations_normalized * std) + mean
+            # Denormalizing predictions
+            predictions_real = (prediations_normalized * std) + mean
 
-        loss: torch.Tensor = criterion(predictions_real, y_train)
+            loss: torch.Tensor = criterion(predictions_real, y_train)
 
         train_loss += loss.item()
 
@@ -278,9 +281,10 @@ def main(model_config: ModelConfig) -> None:
         target_feature_idx=target_idx,
         device=device,
     ).to(device)
-    huber_loss: nn.HuberLoss = nn.HuberLoss()
+    # huber_loss: nn.HuberLoss = nn.HuberLoss()
+    mse_loss: nn.MSELoss = nn.MSELoss()
     directional_loss: DirectionalLoss = DirectionalLoss(
-        loss=huber_loss, penalty_factor=1.0
+        loss=mse_loss, penalty_factor=1.5
     ).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
