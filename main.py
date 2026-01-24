@@ -57,21 +57,19 @@ def train_step(
         X_train = X_train.to(device)
         y_train = y_train.to(device)
 
-        # This adds mixed amp precision for faster training
-        with torch.autocast(device_type=device.type, dtype=torch.float16):
-            # Gemini suggested outputs for stable Z-score
-            pred_norm, mean, std = model(X_train)
-            y_train_norm: torch.Tensor = (y_train - mean) / std
-            loss: torch.Tensor = criterion(pred_norm, y_train_norm)
+        prediations_normalized, mean, std = model(X_train)
+
+        # Denormalizing predictions
+        predictions_real = (prediations_normalized * std) + mean
+
+        loss: torch.Tensor = criterion(predictions_real, y_train)
 
         train_loss += loss.item()
 
         optimizer.zero_grad()
         loss.backward()
 
-        # This prevents model weights from exploding and turning into NaN
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
         optimizer.step()
 
     epoch_loss: float = train_loss / len(train_loader)
@@ -233,6 +231,16 @@ def clean_dataset_directory() -> None:
         print(f"Cleaning {model_directory}...")
         shutil.rmtree(model_directory)
 
+    model_performance_csv: Path = model_config.model_info_dir / "model_performance.csv"
+    if model_performance_csv.exists():
+        model_performance_csv.unlink()
+
+    model_performance_plots: Path = (
+        model_config.model_info_dir / "baseline_model_performance.png"
+    )
+    if model_performance_plots.exists():
+        model_performance_plots.unlink()
+
 
 def main(model_config: ModelConfig) -> None:
     model_save_dir: Path = model_config.model_info_dir / "models"
@@ -272,7 +280,7 @@ def main(model_config: ModelConfig) -> None:
     ).to(device)
     # huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="mean").to(device)
     directional_mse_loss: DirectionalMSELoss = DirectionalMSELoss(
-        penalty_factor=5.0
+        penalty_factor=2.0
     ).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
