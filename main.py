@@ -280,7 +280,7 @@ def plot_model_test_performance(
     ax1.set_ylabel("Count")
     ax1.legend()
 
-    cm: NDArray = confusion_matrix(targets, predictions)
+    cm: NDArray = confusion_matrix(targets, predictions, normalize=True)
     display: ConfusionMatrixDisplay = ConfusionMatrixDisplay(
         confusion_matrix=cm, display_labels=["Down", "Up"]
     )
@@ -290,8 +290,8 @@ def plot_model_test_performance(
     # Add labels to confusion matrix
     text_labels: List[Tuple[int, int, str]] = [
         (0, 0, f"True Neg\n{cm[0, 0]}"),
-        (0, 1, f"False Pos\n{cm[0, 1]}"),
-        (1, 0, f"False Neg\n{cm[1, 0]}"),
+        (0, 1, f"False Neg\n{cm[0, 1]}"),
+        (1, 0, f"False Pos\n{cm[1, 0]}"),
         (1, 1, f"True Pos\n{cm[1, 1]}"),
     ]
 
