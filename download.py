@@ -16,6 +16,8 @@ import polars as pl
 import yfinance as yf
 from tqdm import tqdm
 
+from parse_config import ModelConfig
+
 yf_logger: logging.Logger = logging.getLogger("yfinance")
 yf_logger.setLevel(logging.CRITICAL)
 
@@ -84,10 +86,15 @@ class SecurityType(StrEnum):
 
 
 class NASDAQDownloader:
-    def __init__(self: Self) -> None:
-        self.data: pl.DataFrame = pl.read_csv(
-            "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
-        ).filter(pl.col("Test Issue") == "N")
+    def __init__(self: Self, model_config: ModelConfig) -> None:
+        self.data: pl.DataFrame = (
+            pl.read_csv(
+                "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+                separator="|",
+            )
+            .filter(pl.col("Test Issue") == "N")
+            .sample(fraction=1, shuffle=True, seed=model_config.random_seed)
+        )
 
         self.symbol_data: pl.DataFrame = self.data.select("Symbol", "ETF").unique(
             subset=["Symbol"], keep="first"

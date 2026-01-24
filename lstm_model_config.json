@@ -3,11 +3,11 @@
   "sequence_length": 30,
   "train_fraction": 0.8,
   "val_fraction": 0.1,
-  "batch_size": 256,
-  "learning_rate": 0.0005,
+  "batch_size": 64,
+  "learning_rate": 0.0001,
   "epochs": 200,
   "early_stopping_patience": 20,
-  "num_training_files": 1000,
+  "num_training_files": 100,
   "load_dataset_from_memory": false,
   "model_info_dir": "lstm_model_info"
 }

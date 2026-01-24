@@ -247,7 +247,7 @@ def main(model_config: ModelConfig) -> None:
     os.makedirs(model_save_dir, exist_ok=True)
     clean_dataset_directory()
 
-    downloader: NASDAQDownloader = NASDAQDownloader()
+    downloader: NASDAQDownloader = NASDAQDownloader(model_config)
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
@@ -280,7 +280,7 @@ def main(model_config: ModelConfig) -> None:
     ).to(device)
     # huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="mean").to(device)
     directional_mse_loss: DirectionalMSELoss = DirectionalMSELoss(
-        penalty_factor=2.0
+        penalty_factor=1.0
     ).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
