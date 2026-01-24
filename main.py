@@ -210,17 +210,22 @@ def plot_model_predictions_over_targets(
     plt.close()
 
 
-def clean_debug_predictions() -> None:
+def clean_dataset_directory() -> None:
     debug_directory: Path = model_config.model_info_dir / "debug_predictions"
     if debug_directory.exists():
         print(f"Cleaning {debug_directory}...")
         shutil.rmtree(debug_directory)
 
+    model_directory: Path = model_config.model_info_dir / "model_predictions"
+    if model_directory.exists():
+        print(f"Cleaning {model_directory}...")
+        shutil.rmtree(model_directory)
+
 
 def main(model_config: ModelConfig) -> None:
     model_save_dir: Path = model_config.model_info_dir / "models"
     os.makedirs(model_save_dir, exist_ok=True)
-    clean_debug_predictions()
+    clean_dataset_directory()
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(

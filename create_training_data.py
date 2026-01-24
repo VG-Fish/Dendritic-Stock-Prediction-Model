@@ -213,15 +213,9 @@ class TrainingDataCreator:
         load_datasets_from_memory: bool = False,
     ) -> NASDAQDataLoaders:
         dataset_directory = save_directory / "scaled_datasets"
-        norm_file_path = dataset_directory / "normalization_data.txt"
 
         if load_datasets_from_memory:
             print("Loading datasets from memory...")
-
-            if not norm_file_path.exists():
-                raise ValueError(
-                    f"{RED}No metadata found! Run with load_datasets_from_memory=False first.{RESET}"
-                )
 
             train_df: pl.DataFrame = pl.read_parquet(
                 dataset_directory / "train.parquet"
