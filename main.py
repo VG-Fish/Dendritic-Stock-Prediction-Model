@@ -244,7 +244,7 @@ def main(model_config: ModelConfig) -> None:
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
         dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
-        target=500,
+        target=model_config.num_training_files,
     )
 
     training_data_creator: TrainingDataCreator = TrainingDataCreator(model_config)
