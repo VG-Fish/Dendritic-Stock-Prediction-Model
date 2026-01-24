@@ -78,10 +78,12 @@ class StockPredictionModel(nn.Module):
         return out_denormalized, target_mean, target_std
 
 
-class DirectionalMSELoss(nn.Module):
-    def __init__(self, penalty_factor: float = 5.0, scale_factor: float = 100.0):
+class DirectionalLoss(nn.Module):
+    def __init__(
+        self, loss: nn.Module, penalty_factor: float = 5.0, scale_factor: float = 100.0
+    ):
         super().__init__()
-        self.mse: nn.MSELoss = nn.MSELoss()
+        self.loss: nn.Module = loss
         self.penalty_factor: float = penalty_factor
         self.scale_factor: float = scale_factor
 
@@ -90,7 +92,7 @@ class DirectionalMSELoss(nn.Module):
         pred_scaled: torch.Tensor = y_pred * self.scale_factor
         true_scaled: torch.Tensor = y_true * self.scale_factor
 
-        mse_loss: torch.Tensor = self.mse(pred_scaled, true_scaled)
+        mse_loss: torch.Tensor = self.loss(pred_scaled, true_scaled)
 
         # Penalty applies if signs are different
         direction_penalty: torch.Tensor = torch.mean(

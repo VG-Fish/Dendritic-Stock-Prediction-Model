@@ -21,7 +21,7 @@ from download import (
     NASDAQDownloader,
     SecurityType,
 )
-from model import DirectionalMSELoss, StockPredictionModel
+from model import DirectionalLoss, StockPredictionModel
 from parse_config import ModelConfig, get_config_from_json
 from stocks import NASDAQDataLoaders
 
@@ -138,7 +138,7 @@ def save_and_plot_model_performance(
     print("Saving model performance to CSV...")
     model_performance_df: pl.DataFrame = pl.DataFrame(
         {
-            "Training Losses": all_losses,
+            "Training Loss": all_losses,
             "Val RSME": all_rsme,
             "Dimensional Accuracy": all_dim_accuracies,
         }
@@ -262,7 +262,7 @@ def main(model_config: ModelConfig) -> None:
         load_datasets_from_memory=model_config.load_dataset_from_memory,
     )
 
-    # Get close column dynamically
+    # Get 'Close' column dynamically
     feature_names: List[str] = data_loaders.train.dataset.feature_cols  # pyright: ignore[reportAttributeAccessIssue]
     try:
         target_idx = feature_names.index("Close")
@@ -271,20 +271,21 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=64,
-        num_layers=2,
+        hidden_dim=32,
+        num_layers=1,
         output_dim=1,
-        dropout=0.3,
+        dropout=0.2,
         target_feature_idx=target_idx,
         device=device,
     ).to(device)
-    # huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="mean").to(device)
-    directional_mse_loss: DirectionalMSELoss = DirectionalMSELoss(
-        penalty_factor=1.0
+    huber_loss: nn.HuberLoss = nn.HuberLoss()
+    directional_loss: DirectionalLoss = DirectionalLoss(
+        loss=huber_loss, penalty_factor=1.0
     ).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=model_config.learning_rate,
+        weight_decay=1e-5,
     )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -299,12 +300,11 @@ def main(model_config: ModelConfig) -> None:
 
     best_val_rmse: float = float("inf")
     counter: int = 0
-    # loss_epoch_switch: int = 20
     for epoch in tqdm(range(model_config.epochs), desc="Number of Epochs Left"):
         losses: float = train_step(
             model,
             data_loaders.train,
-            directional_mse_loss,
+            directional_loss,
             optimizer,
             epoch,
         )
