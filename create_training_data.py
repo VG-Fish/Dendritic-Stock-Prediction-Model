@@ -1,7 +1,8 @@
 import argparse
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List
 
 import polars as pl
 import torch
@@ -13,8 +14,8 @@ from stocks import NASDAQDataLoaders, NASDAQDataset
 RANDOM_SEED: int = 1290
 SEQUENCE_LENGTH: int = 30
 TRAIN_FRACTION: float = 0.8
-BATCH_SIZE: int = 256
 VAL_FRACTION: float = 0.1
+BATCH_SIZE: int = 256
 
 # ANSI escape codes
 RED: str = "\033[31m"
@@ -28,65 +29,9 @@ class SplitDFDatasets:
     test: pl.DataFrame
 
 
-# Gemini suggested function
-def check_data_integrity(df: pl.DataFrame, name: str = "Dataset") -> None:
-    print(f"--- Checking {name} for NaNs and Infs ---")
-
-    # Identify float columns (only they can hold NaN/Inf)
-    float_cols: List[str] = [
-        col
-        for col, dtype in zip(df.columns, df.dtypes)
-        if dtype in (pl.Float32, pl.Float64)
-    ]
-
-    found_issue: bool = False
-
-    # 1. Check for Nulls
-    null_counts: Tuple = df.select(pl.all().null_count()).row(0)
-    if sum(null_counts) > 0:
-        print(f"{RED}Found NULLs in {name}:{RESET}")
-        for col, count in zip(df.columns, null_counts):
-            if count > 0:
-                print(f"  {col}: {count}")
-        found_issue = True
-
-    # 2. Check for NaNs
-    if float_cols:
-        nan_exprs: List[pl.Expr] = [
-            pl.col(c).is_nan().sum().alias(c) for c in float_cols
-        ]
-        nan_counts: Tuple = df.select(nan_exprs).row(0)
-
-        if sum(nan_counts) > 0:
-            print(f"{RED}Found NaNs in {name}:{RESET}")
-            for col, count in zip(float_cols, nan_counts):
-                if count > 0:
-                    print(f"  {col}: {count}")
-            found_issue = True
-
-    # 3. Check for Infs
-    if float_cols:
-        inf_exprs: List[pl.Expr] = [
-            pl.col(c).is_infinite().sum().alias(c) for c in float_cols
-        ]
-        inf_counts: Tuple = df.select(inf_exprs).row(0)
-
-        if sum(inf_counts) > 0:
-            print(f"{RED}Found Infs in {name}:{RESET}")
-            for col, count in zip(float_cols, inf_counts):
-                if count > 0:
-                    print(f"  {col}: {count}")
-            found_issue = True
-
-    if not found_issue:
-        print(f"✅ {name} looks clean.")
-    else:
-        print(f"{RED}!! Data integrity issues found in {name} !!{RESET}")
-
-
 # Gemini suggestion to improve dimensional accuracy
 # RSI calculates if the stock was overbought
-def compute_rsi(expr: pl.Expr, period: int = 14) -> pl.Expr:
+def _compute_rsi(expr: pl.Expr, period: int = 14) -> pl.Expr:
     delta: pl.Expr = expr.diff()
     up: pl.Expr = delta.clip(lower_bound=0)
     down: pl.Expr = -delta.clip(upper_bound=0)
@@ -108,6 +53,7 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
     glob: List = list(directory.glob("*.csv"))
     print(f"Going through {len(glob)} CSVs...")
     schema_overrides: Dict[str, type] = {
+        "Date": pl.Datetime,
         "Open": pl.Float64,
         "High": pl.Float64,
         "Low": pl.Float64,
@@ -115,113 +61,105 @@ def _create_datasets_from(directory: Path) -> SplitDFDatasets:
         "Volume": pl.Float64,
     }
 
-    lf: pl.LazyFrame = (
-        pl.scan_csv(
-            glob,
-            include_file_paths="Path",
-            try_parse_dates=True,
-            schema_overrides=schema_overrides,
+    df: pl.DataFrame = (
+        (
+            pl.scan_csv(
+                glob,
+                include_file_paths="Path",
+                try_parse_dates=True,
+                schema_overrides=schema_overrides,
+            )
+            .sort(["Path", "Date"])
+            # We make the rows where Volume = 0 equal to 1 as log(1) = 0
+            .with_columns(
+                pl.col("Date").dt.date(),
+                pl.int_range(pl.len()).over("Path").alias("Index"),
+                # log1p() is better for Volume as log1p(0) = 0 & is more stable for smaller x
+                pl.col("Close").log1p().diff().over("Path").alias("Log Return"),
+                (
+                    pl.col("Open").log() - pl.col("Close").log().shift(1).over("Path")
+                ).alias("Log Overnight"),
+                (pl.col("High").log() - pl.col("Low").log()).alias("Log Range"),
+                pl.col("Volume").log().diff().over("Path").alias("Log Volume Change"),
+            )
+            .with_columns(
+                _compute_rsi(pl.col("Close"), period=14).over("Path").alias("RSI"),
+                (pl.col("Close").ewm_mean(span=12) - pl.col("Close").ewm_mean(span=26))
+                .over("Path")
+                .alias("MACD"),  # MACD tells the LSTM the strength of the trend.
+                # This is a trend feature that allows the model to determine if it's currently a bull or bear market
+                (pl.col("Close") / pl.col("Close").rolling_mean(window_size=50))
+                .log()
+                .over("Path")
+                .alias("SMA Ratio"),
+            )
+            # Calculate MACD Signal line (9 EMA of MACD)
+            # EMA = exponential moving average, which places more weight on more recent data points
+            .with_columns(
+                pl.col("MACD").ewm_mean(span=9).over("Path").alias("MACD Signal")
+            )
+            .with_columns(
+                pl.col("Log Return")
+                .rolling_std(window_size=SEQUENCE_LENGTH)
+                .over("Path")
+                .alias("Rolling STD")
+            )
+            .with_columns(pl.all().exclude("Path", "Date", "Index").cast(pl.Float32))
+            .drop("High", "Low", "Close", "Volume", "Open")
+            # Remove NaNs, nulls, and infinities
+            .fill_nan(None)
+            .drop_nulls()
+            .filter(
+                pl.all_horizontal(
+                    pl.all().exclude("Path", "Index", "Date").is_finite()
+                ),
+            )
         )
-        .sort(["Path", "Date"])
-        # We must remove rows where Volume = 0 as log(0) = -inf
-        .filter(~pl.any_horizontal(pl.col("Volume") == 0))
-        .with_columns(
-            pl.int_range(pl.len()).over("Path").alias("Index"),
-            pl.col("Close").log().diff().over("Path").alias("Log Return"),
-            (pl.col("Open").log() - pl.col("Close").log().shift(1).over("Path")).alias(
-                "Log Overnight"
-            ),
-            (pl.col("High").log() - pl.col("Low").log()).alias("Log Range"),
-            pl.col("Volume").log().diff().over("Path").alias("Log Volume Change"),
-        )
-        .with_columns(
-            compute_rsi(pl.col("Close"), period=14).over("Path").alias("RSI"),
-            (pl.col("Close").ewm_mean(span=12) - pl.col("Close").ewm_mean(span=26))
-            .over("Path")
-            .alias("MACD"),  # MACD tells the LSTM the strength of the trend.
-            # This is a trend feature that allows the model to determine if it's currently a bull or bear market
-            (pl.col("Close") / pl.col("Close").rolling_mean(window_size=50))
-            .log()
-            .over("Path")
-            .alias("SMA Ratio"),
-        )
-        # Calculate MACD Signal line (9 EMA of MACD)
-        # EMA = exponential moving average, which places more weight on more recent data points
-        .with_columns(pl.col("MACD").ewm_mean(span=9).over("Path").alias("MACD Signal"))
-        .with_columns(
-            pl.col("Log Return")
-            .rolling_std(window_size=SEQUENCE_LENGTH)
-            .over("Path")
-            .alias("Rolling STD")
-        )
-        .with_columns(pl.all().exclude("Path", "Date", "Index").cast(pl.Float32))
-        .drop("High", "Low", "Date", "Close", "Volume", "Open")
-        .fill_nan(None)
-        .drop_nulls()
-        .filter(
-            pl.all_horizontal(pl.all().exclude("Path", "Index").is_finite()),
-            # Remove penny stocks that have very low standard deviations as having them makes the
-            # loss explode
-            pl.col("Rolling STD") > 1e-4,
-        )
-        .rolling(
-            index_column="Index",
-            period=f"{SEQUENCE_LENGTH}i",
-            group_by=pl.col("Path"),
-        )
+        .collect()
+        .sort(["Path", "Index"])
+        .rolling(index_column="Index", period=f"{SEQUENCE_LENGTH}i", group_by="Path")
         .having(pl.len() == SEQUENCE_LENGTH)
-        .all()
-        .with_columns(
-            pl.col("Log Return").list.last().alias("Target"),
-            pl.col("Log Return").list.slice(0, window_size).alias("Close"),
-            pl.col("Log Overnight").list.slice(0, window_size).alias("Open"),
-            pl.col("Log Volume Change").list.slice(0, window_size).alias("Volume"),
-            pl.col("Log Range").list.slice(0, window_size).alias("Range"),
-            pl.col("Rolling STD").list.slice(0, window_size).alias("Rolling STD"),
-            pl.col("RSI").list.slice(0, window_size),
-            pl.col("MACD").list.slice(0, window_size),
-            pl.col("MACD Signal").list.slice(0, window_size),
-            pl.col("SMA Ratio").list.slice(0, window_size).alias("SMA Ratio"),
+        .agg(
+            pl.col("Log Return").last().alias("Target"),
+            pl.col("Date").last(),
+            pl.col("RSI").slice(0, window_size),
+            pl.col("MACD").slice(0, window_size),
+            pl.col("MACD Signal").slice(0, window_size),
+            pl.col("SMA Ratio").slice(0, window_size),
+            pl.col("Rolling STD").slice(0, window_size),
+            pl.col("Log Return").slice(0, window_size).alias("Close"),
+            pl.col("Log Overnight").slice(0, window_size).alias("Open"),
+            pl.col("Log Volume Change").slice(0, window_size).alias("Volume"),
+            pl.col("Log Range").slice(0, window_size).alias("Range"),
         )
-        .drop("Log Return", "Log Overnight", "Log Range", "Log Volume Change")
-        .drop_nulls()
+        .drop("Path", "Index")
     )
 
-    # Sets up code for splitting up the dataset into train, val, and test datasets
-    # by finding how much data points exist for each company. Then, we figure out
-    # how much data points should be in the train and val datasets.
-    # Test dataset gets the rest of the points. We don't sort the data before doing
-    # all of these operations as the data should already be sorted from above.
-    # (.rolling() assumes the data is sorted, anyway.)
-    df: pl.DataFrame = lf.collect().sort(["Path", "Index"])
-
-    all_paths: pl.DataFrame = (
-        df.select("Path").unique().sample(fraction=1.0, shuffle=True, seed=RANDOM_SEED)
+    date_cutoffs: pl.DataFrame = df.select(
+        pl.col("Date")
+        .quantile(TRAIN_FRACTION, interpolation="nearest")
+        .alias("Train Cutoff"),
+        pl.col("Date")
+        .quantile(TRAIN_FRACTION + VAL_FRACTION, interpolation="nearest")
+        .alias("Val Cutoff"),
     )
+    train_date_cutoff: date = date_cutoffs["Train Cutoff"].dt.date().item()
+    val_date_cutoff: date = date_cutoffs["Val Cutoff"].dt.date().item()
 
-    # This splits the dataset by ticker, so some companies may be excluded from some datasets
-    # This forces to model to generalize
-    n_stocks: int = len(all_paths)
-    train_end = int(n_stocks * TRAIN_FRACTION)
-    val_end = int(n_stocks * (TRAIN_FRACTION + VAL_FRACTION))
+    # We minus by timedelta to remove the shared data between train and val datasets that came as a result of using .rolling()
+    train_df: pl.DataFrame = df.filter(
+        pl.col("Date") < train_date_cutoff - timedelta(days=SEQUENCE_LENGTH)
+    ).drop("Date")
 
-    train_paths: pl.DataFrame = all_paths[:train_end]
-    val_paths: pl.DataFrame = all_paths[train_end:val_end]
-    test_paths: pl.DataFrame = all_paths[val_end:]
+    val_df: pl.DataFrame = df.filter(
+        (pl.col("Date") >= train_date_cutoff)
+        & (pl.col("Date") < val_date_cutoff - timedelta(days=SEQUENCE_LENGTH))
+    ).drop("Date")
 
-    columns_to_drop: List[str] = ["Path", "Index"]
-    train_df: pl.DataFrame = df.join(train_paths, on="Path", how="inner").drop(
-        columns_to_drop
-    )
-    val_df: pl.DataFrame = df.join(val_paths, on="Path", how="inner").drop(
-        columns_to_drop
-    )
-    test_df: pl.DataFrame = df.join(test_paths, on="Path", how="inner").drop(
-        columns_to_drop
-    )
+    test_df: pl.DataFrame = df.filter(pl.col("Date") >= val_date_cutoff).drop("Date")
 
     print(
-        f"Created datasets: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}"
+        f"Created datasets: Train Length={len(train_df)}, Val Length={len(val_df)}, Test Length={len(test_df)}"
     )
 
     return SplitDFDatasets(train_df, val_df, test_df)

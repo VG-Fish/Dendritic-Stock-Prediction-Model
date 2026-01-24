@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Self, Tuple
 
+import numpy as np
 import polars as pl
 import torch
 from torch.utils.data.dataloader import DataLoader
@@ -22,7 +23,9 @@ class NASDAQDataset(Dataset):
         n_samples: int = len(df)
         sequence_length: int = len(df[feature_cols[0]][0])
 
-        flat_features = df.select(feature_cols).explode(feature_cols).to_numpy()
+        flat_features: np.ndarray = (
+            df.select(feature_cols).explode(feature_cols).to_numpy()
+        )
 
         # Converting the flat numpy array to a tensor, then 'viewing' it as a 3D tensor.
         self.features: torch.Tensor = torch.tensor(

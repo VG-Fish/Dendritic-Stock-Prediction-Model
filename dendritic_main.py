@@ -15,7 +15,12 @@ from sklearn.metrics import root_mean_squared_error
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from download import NASDAQDatasetInfo, NASDAQDownloader
+from download import (
+    NASDAQDatasetCreationOptions,
+    NASDAQDatasetInfo,
+    NASDAQDownloader,
+    SecurityType,
+)
 from main import plot_model_performance, prepare_data
 from model import StockPredictionModel
 
@@ -82,7 +87,10 @@ def main() -> None:
     os.makedirs(model_save_dir, exist_ok=True)
 
     downloader: NASDAQDownloader = NASDAQDownloader()
-    info: NASDAQDatasetInfo = downloader.download_dataset(stop_if_dest_dir_exists=True)
+    info: NASDAQDatasetInfo = downloader.download_dataset(
+        SecurityType.STOCK,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
+    )
 
     data_loaders, scaler = prepare_data(info.stocks_directory)
 

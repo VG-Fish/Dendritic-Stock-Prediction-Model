@@ -14,7 +14,12 @@ from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
 from create_training_data import create_data_loaders_from
-from download import NASDAQDatasetInfo, NASDAQDownloader, SecurityType
+from download import (
+    NASDAQDatasetCreationOptions,
+    NASDAQDatasetInfo,
+    NASDAQDownloader,
+    SecurityType,
+)
 from model import DirectionalMSELoss, StockPredictionModel
 
 # Initialize important variables
@@ -179,11 +184,11 @@ def plot_model_predictions_over_targets(
 ) -> None:
     model.eval()
 
-    sampler = RandomSampler(
+    sampler: RandomSampler = RandomSampler(
         test_dataset,  # pyright: ignore[reportArgumentType]
         replacement=False,
     )
-    dataloader_with_sampler = DataLoader(
+    dataloader_with_sampler: DataLoader = DataLoader(
         test_dataset, batch_size=BATCH_SIZE, sampler=sampler
     )
     X_sample, y_sample = next(iter(dataloader_with_sampler))
@@ -211,7 +216,10 @@ def main() -> None:
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(
-        SecurityType.STOCK, stop_if_dest_dir_exists=True, target=1500
+        save_directory="nasdaq_dataset",
+        security_type=SecurityType.STOCK,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
+        target=50,
     )
 
     data_loaders = create_data_loaders_from(
@@ -226,14 +234,16 @@ def main() -> None:
         num_layers=2,
         output_dim=1,
         dropout=0.2,
-        target_feature_idx=5,
+        target_feature_idx=0,
         device=device,
     ).to(device)
-    criterion: nn.Module = DirectionalMSELoss(penalty_factor=5).to(device)
+    huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="sum").to(device)
+    directional_mse_loss: DirectionalMSELoss = DirectionalMSELoss(
+        penalty_factor=10.0
+    ).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=LEARNING_RATE,
-        weight_decay=1e-3,  # Weight decay penalizes large weights
     )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -249,9 +259,14 @@ def main() -> None:
     best_val_rmse: float = float("inf")
     patience: int = 15
     counter: int = 0
+    loss_epoch_switch: int = 20
     for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
         losses: float = train_step(
-            model, data_loaders.train, criterion, optimizer, epoch
+            model,
+            data_loaders.train,
+            huber_loss if epoch <= loss_epoch_switch else directional_mse_loss,
+            optimizer,
+            epoch,
         )
         all_losses.append(losses)
 

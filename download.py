@@ -2,13 +2,14 @@
 
 import logging
 import os
+import shutil
 import sys
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import redirect_stderr
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Dict, List, Optional, Self, Tuple
+from typing import Dict, List, Optional, Self, Tuple, Union
 
 import pandas as pd
 import polars as pl
@@ -26,6 +27,55 @@ class NASDAQDatasetInfo:
     etfs_directory: Path
     valid_tickers_metadata: Path
 
+    # Code modified from https://stackoverflow.com/a/57896232
+    @classmethod
+    def create_new(
+        cls: type, parent_directory: Path, make_unique: bool = False
+    ) -> "NASDAQDatasetInfo":
+        if not make_unique:
+            return cls._from_parent(parent_directory)
+
+        candidate: Path = parent_directory
+        counter: int = 1
+        while candidate.exists():
+            candidate = parent_directory.with_name(f"{parent_directory.name}_{counter}")
+            counter += 1
+
+        return cls._from_parent(candidate)
+
+    @classmethod
+    def _from_parent(cls: type, parent: Path) -> "NASDAQDatasetInfo":
+        return cls(
+            parent_directory=parent,
+            stocks_directory=parent / "stocks",
+            etfs_directory=parent / "etfs",
+            valid_tickers_metadata=parent / "symbols_valid_meta.csv",
+        )
+
+
+class NASDAQDatasetCreationOptions(IntEnum):
+    """
+    Options to determine what `NASDAQDownloader().download_dataset()` should do when creating a new dataset. All the options
+    will only be applied if an existing dataset directory exists.
+
+    `IGNORE` creates a new directory with the same name as the existing dataset directory but adds a number to the end.
+
+    `OVERWRITE` will reuse the same directory and add new files if they don't exist already. More than, `target` number of files
+    may exist if you use this option.
+
+    `REPLACE` will remove all the files in the existing directory and start from scratch.
+
+    `REUSE` will make `download_dataset()` return early, causing the existing dataset to be used.
+
+    `STOP` will raise an error if the existing dataset directory exists.
+    """
+
+    IGNORE = 0
+    OVERWRITE = 1
+    REPLACE = 2
+    REUSE = 3
+    STOP = 4
+
 
 class SecurityType(StrEnum):
     STOCK = "N"
@@ -34,15 +84,7 @@ class SecurityType(StrEnum):
 
 
 class NASDAQDownloader:
-    def __init__(self: Self, data_directory: str = "nasdaq_dataset") -> None:
-        self.data_directory: Path = Path(data_directory)
-        self._dataset_info: NASDAQDatasetInfo = NASDAQDatasetInfo(
-            self.data_directory,
-            self.data_directory / "stocks",
-            self.data_directory / "etfs",
-            self.data_directory / "symbols_valid_meta.csv",
-        )
-
+    def __init__(self: Self) -> None:
         self.data: pl.DataFrame = pl.read_csv(
             "http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", separator="|"
         ).filter(pl.col("Test Issue") == "N")
@@ -51,7 +93,9 @@ class NASDAQDownloader:
             subset=["Symbol"], keep="first"
         )
 
-    def _process_symbol(self: Self, symbol: str, is_etf: bool) -> Tuple[str, bool]:
+    def _process_symbol(
+        self: Self, save_directory: Path, symbol: str, is_etf: bool
+    ) -> Tuple[str, bool]:
         periods: List[str] = [
             "1d",
             "5d",
@@ -67,8 +111,8 @@ class NASDAQDownloader:
 
         # Sanitize symbol for filename (e.g., "BRK/B" -> "BRK-B")
         safe_symbol = symbol.replace("/", "-").replace("^", "-")
-        subdir = "etfs" if is_etf else "stocks"
-        stock_data_path = self.data_directory / subdir / f"{safe_symbol}.csv"
+        sub_directory = "etfs" if is_etf else "stocks"
+        stock_data_path = save_directory / sub_directory / f"{safe_symbol}.csv"
 
         if stock_data_path.exists():
             return symbol, True
@@ -110,16 +154,34 @@ class NASDAQDownloader:
 
     def download_dataset(
         self: Self,
-        security_type: SecurityType,
-        stop_if_dest_dir_exists: bool = True,
+        save_directory: Union[str, Path],
+        dataset_creation_option: NASDAQDatasetCreationOptions = NASDAQDatasetCreationOptions.IGNORE,
+        security_type: SecurityType = SecurityType.ALL,
         target: Optional[int] = None,
     ) -> NASDAQDatasetInfo:
-        if stop_if_dest_dir_exists and os.path.exists(self.data_directory):
-            print(f"Directory {self.data_directory} exists. Skipping download.")
-            return self._dataset_info
+        save_directory = Path(save_directory)
+        dataset_info: NASDAQDatasetInfo = NASDAQDatasetInfo.create_new(
+            save_directory,
+        )
 
-        os.makedirs(self._dataset_info.stocks_directory, exist_ok=True)
-        os.makedirs(self._dataset_info.etfs_directory, exist_ok=True)
+        if save_directory.exists():
+            match dataset_creation_option:
+                case NASDAQDatasetCreationOptions.IGNORE:
+                    print("Creating existing dataset...")
+                    dataset_info = NASDAQDatasetInfo.create_new(
+                        save_directory, make_unique=True
+                    )
+                case NASDAQDatasetCreationOptions.REPLACE:
+                    print("Removing existing dataset...")
+                    shutil.rmtree(save_directory)
+                case NASDAQDatasetCreationOptions.REUSE:
+                    print("Reusing existing dataset...")
+                    return dataset_info
+                case NASDAQDatasetCreationOptions.STOP:
+                    raise FileExistsError(f"'{save_directory}' already exists.")
+
+        os.makedirs(dataset_info.stocks_directory, exist_ok=True)
+        os.makedirs(dataset_info.etfs_directory, exist_ok=True)
 
         candidates: pl.DataFrame = self.symbol_data
         match security_type:
@@ -132,7 +194,12 @@ class NASDAQDownloader:
 
         def submit_new_task(idx: int) -> int:
             symbol, etf_flag = candidate_rows[idx]
-            future = executor.submit(self._process_symbol, symbol, etf_flag == "Y")
+            future = executor.submit(
+                self._process_symbol,
+                dataset_info.parent_directory,
+                symbol,
+                etf_flag == "Y",
+            )
             pending_futures[future] = idx
             return idx + 1
 
@@ -158,7 +225,7 @@ class NASDAQDownloader:
 
             with tqdm(
                 total=target_downloads,
-                desc="Downloading Dataset...",
+                desc="Downloading Dataset Progress",
                 unit="file",
                 file=sys.stdout,
             ) as pbar:
@@ -195,7 +262,7 @@ class NASDAQDownloader:
         )
 
         self.data.filter(pl.col("Symbol").is_in(valid_symbols)).write_csv(
-            self._dataset_info.valid_tickers_metadata
+            dataset_info.valid_tickers_metadata
         )
 
-        return self._dataset_info
+        return dataset_info
