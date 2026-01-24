@@ -219,7 +219,7 @@ def main() -> None:
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
         dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
-        target=50,
+        target=500,
     )
 
     data_loaders = create_data_loaders_from(
@@ -228,13 +228,20 @@ def main() -> None:
         load_datasets_from_memory=LOAD_DATASET_FROM_MEMORY,
     )
 
+    # Get close column dynamically
+    feature_names = data_loaders.train.dataset.feature_cols  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        target_idx = feature_names.index("Close")
+    except ValueError:
+        raise ValueError(f"{RED}'Close' column not found in dataset features!{RESET}")
+
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
         hidden_dim=64,
         num_layers=2,
         output_dim=1,
         dropout=0.2,
-        target_feature_idx=0,
+        target_feature_idx=target_idx,
         device=device,
     ).to(device)
     huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="sum").to(device)
@@ -264,7 +271,7 @@ def main() -> None:
         losses: float = train_step(
             model,
             data_loaders.train,
-            huber_loss if epoch <= loss_epoch_switch else directional_mse_loss,
+            huber_loss,  # if epoch <= loss_epoch_switch else directional_mse_loss,
             optimizer,
             epoch,
         )

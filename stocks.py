@@ -17,14 +17,14 @@ class NASDAQDataLoaders:
 
 class NASDAQDataset(Dataset):
     def __init__(self: Self, df: pl.DataFrame) -> None:
-        feature_cols: List[str] = list(df.columns)
-        feature_cols.remove("Target")
+        self.feature_cols: List[str] = list(df.columns)
+        self.feature_cols.remove("Target")
 
         n_samples: int = len(df)
-        sequence_length: int = len(df[feature_cols[0]][0])
+        sequence_length: int = len(df[self.feature_cols[0]][0])
 
         flat_features: np.ndarray = (
-            df.select(feature_cols).explode(feature_cols).to_numpy()
+            df.select(self.feature_cols).explode(self.feature_cols).to_numpy()
         )
 
         # Converting the flat numpy array to a tensor, then 'viewing' it as a 3D tensor.
