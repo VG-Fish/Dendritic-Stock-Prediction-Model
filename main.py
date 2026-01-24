@@ -266,7 +266,7 @@ def main(model_config: ModelConfig) -> None:
         hidden_dim=64,
         num_layers=2,
         output_dim=1,
-        dropout=0.5,
+        dropout=0.3,
         target_feature_idx=target_idx,
         device=device,
     ).to(device)
