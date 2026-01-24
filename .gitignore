@@ -5,6 +5,7 @@ __pycache__/
 *.pt
 .env
 scaled_datasets/
+debug_predictions/
 
 # MacOS stuff
 .DS_Store
