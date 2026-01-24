@@ -27,6 +27,7 @@ class ModelConfig:
     batch_size: int
     learning_rate: float
     epochs: int
+    early_stopping_patience: int
     load_dataset_from_memory: bool
     model_info_dir: Path
 
@@ -59,6 +60,7 @@ def get_config_from_json(config_path: Union[str, Path]) -> Optional[ModelConfig]
                 batch_size=config["batch_size"],
                 learning_rate=config["learning_rate"],
                 epochs=config["epochs"],
+                early_stopping_patience=config.get("early_stopping_patience", 15),
                 load_dataset_from_memory=config.get("load_dataset_from_memory", False),
                 model_info_dir=config["model_info_dir"],
             )

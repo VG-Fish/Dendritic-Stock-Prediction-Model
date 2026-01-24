@@ -290,7 +290,6 @@ def main(model_config: ModelConfig) -> None:
     all_dim_accuracies: List[float] = []
 
     best_val_rmse: float = float("inf")
-    patience: int = 20
     counter: int = 0
     # loss_epoch_switch: int = 20
     for epoch in tqdm(range(model_config.epochs), desc="Number of Epochs Left"):
@@ -314,7 +313,7 @@ def main(model_config: ModelConfig) -> None:
         else:
             counter += 1
             print(f"No improvement for {counter} epochs.")
-            if counter >= patience:
+            if counter >= model_config.early_stopping_patience:
                 print("Early stopping triggered!")
                 break
 

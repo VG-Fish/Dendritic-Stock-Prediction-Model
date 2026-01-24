@@ -6,6 +6,7 @@
   "batch_size": 1024,
   "learning_rate": 0.0005,
   "epochs": 200,
+  "early_stopping_patience": 20,
   "load_dataset_from_memory": false,
   "model_info_dir": "lstm_model_info"
 }
