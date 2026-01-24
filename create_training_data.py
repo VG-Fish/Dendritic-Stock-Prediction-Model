@@ -130,7 +130,8 @@ class TrainingDataCreator:
             )
             .having(pl.len() == self.model_config.sequence_length)
             .agg(
-                pl.col("Log Return").last().alias("Target"),
+                # This makes the data appropriate for a classification model
+                (pl.col("Log Return").last() > 0).cast(pl.Float32).alias("Target"),
                 pl.col("Date").last(),
                 pl.col("RSI").slice(0, window_size),
                 pl.col("MACD").slice(0, window_size),

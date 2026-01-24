@@ -1,7 +1,7 @@
 import os
 import shutil
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -9,6 +9,12 @@ import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from numpy.typing import NDArray
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    classification_report,
+    confusion_matrix,
+)
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import Dataset, RandomSampler
 from torch.utils.data.dataloader import DataLoader
@@ -21,7 +27,7 @@ from download import (
     NASDAQDownloader,
     SecurityType,
 )
-from model import DirectionalLoss, StockPredictionModel
+from model import StockPredictionModel
 from parse_config import ModelConfig, get_config_from_json
 from stocks import NASDAQDataLoaders
 
@@ -60,12 +66,9 @@ def train_step(
         with torch.autocast(
             device_type=device.type, dtype=torch.float16, cache_enabled=True
         ):
-            prediations_normalized, mean, std = model(X_train)
+            logits: torch.Tensor = model(X_train)
 
-            # Denormalizing predictions
-            predictions_real = (prediations_normalized * std) + mean
-
-            loss: torch.Tensor = criterion(predictions_real, y_train)
+            loss: torch.Tensor = criterion(logits, y_train)
 
         train_loss += loss.item()
 
@@ -84,11 +87,19 @@ def train_step(
 def evaluate(
     model: StockPredictionModel,
     loader: DataLoader,
+    criterion: nn.Module,
+    epoch: Optional[int] = None,
+    save_model_classification_report: bool = True,
     desc: str = "Evaluating",
 ) -> Tuple[float, float]:
     model.eval()
-    all_predictions: List[torch.Tensor] = []
-    all_targets: List[torch.Tensor] = []
+
+    correct: int = 0
+    total_samples: int = 0
+    total_loss: float = 0.0
+
+    all_targets: List[NDArray] = []
+    all_predictions: List[NDArray] = []
 
     with torch.no_grad():
         for X, y in tqdm(loader, desc=desc):
@@ -96,54 +107,79 @@ def evaluate(
             y = y.to(device)
 
             # Gemini suggested z-score stuff
-            pred_norm, mean, std = model(X)
-            pred_real: torch.Tensor = (pred_norm * std) + mean
+            logits: torch.Tensor = model(X)
 
-            all_predictions.append(pred_real.cpu())
-            all_targets.append(y.cpu())
+            batch_loss: torch.Tensor = criterion(logits, y)
+            # Multiply by batch size to get total loss for the batch
+            total_loss += batch_loss.item() * X.size(0)
 
-    final_predictions: torch.Tensor = torch.vstack(all_predictions)
-    final_targets: torch.Tensor = torch.vstack(all_targets)
+            probabilities: torch.Tensor = torch.sigmoid(logits)
+            # If prob > 0.5, predict 1 (Up), else 0 (Down)
+            predictions: torch.Tensor = (probabilities > 0.5).float()
+            correct += (predictions == y).sum().item()
+            total_samples += y.size(0)
 
-    dim_correct: torch.Tensor = torch.sign(final_predictions) == torch.sign(
-        final_targets
+            all_targets.extend(y.cpu().numpy())
+            all_predictions.extend(predictions.cpu().numpy())
+
+    avg_loss: float = total_loss / total_samples
+    accuracy: float = correct / total_samples
+
+    if not save_model_classification_report:
+        return avg_loss, accuracy
+
+    report: Dict = classification_report(  # pyright: ignore[reportAssignmentType]
+        all_targets,
+        all_predictions,
+        target_names=["Down", "Up"],
+        output_dict=True,
+        digits=4,
     )
-    dim_accuracy: float = torch.mean(dim_correct.float()).item()
-    rmse: float = torch.sqrt(
-        torch.nn.functional.mse_loss(final_targets, final_predictions)
-    ).item()
+    classification_report_df: pl.DataFrame = pl.DataFrame(report)
+    if epoch:
+        classification_report_df.write_csv(
+            model.config.model_info_dir / "classification_reports" / f"report_{epoch}"
+        )
 
-    return rmse, dim_accuracy
+    return avg_loss, accuracy
 
 
 def val_step(
     model: StockPredictionModel,
     val_loader: DataLoader,
+    criterion: nn.Module,
     scheduler: ReduceLROnPlateau,
     epoch: int,
 ) -> Tuple[float, float]:
-    val_rmse, dim_accuracy = evaluate(model, val_loader, desc=f"Val Epoch {epoch}")
+    val_loss, val_accuracy = evaluate(
+        model,
+        val_loader,
+        criterion,
+        epoch,
+        save_model_classification_report=True,
+        desc=f"Val Epoch {epoch}",
+    )
 
-    print(f"\nCurrent Dimensional Accuracy: {dim_accuracy:.3%}")
-    print(f"Current RMSE: {val_rmse}")
+    print(f"\nCurrent Accuracy: {val_accuracy:.3%}")
+    print(f"Current Loss: {val_loss}")
 
-    scheduler.step(val_rmse)
+    scheduler.step(val_loss)
 
-    return val_rmse, dim_accuracy
+    return val_loss, val_accuracy
 
 
 def save_and_plot_model_performance(
     model_config: ModelConfig,
-    all_losses: List[float],
-    all_rsme: List[float],
-    all_dim_accuracies: List[float],
+    all_training_losses: List[float],
+    all_val_losses: List[float],
+    all_accuracies: List[float],
 ) -> None:
     print("Saving model performance to CSV...")
     model_performance_df: pl.DataFrame = pl.DataFrame(
         {
-            "Training Loss": all_losses,
-            "Val RSME": all_rsme,
-            "Dimensional Accuracy": all_dim_accuracies,
+            "Training Loss": all_training_losses,
+            "Val Loss": all_val_losses,
+            "Dimensional Accuracy": all_accuracies,
         }
     )
     model_performance_df.write_csv(
@@ -156,13 +192,13 @@ def save_and_plot_model_performance(
     color = "tab:blue"
     ax1.set_xlabel("Epochs")
     ax1.set_ylabel("Training Loss", color=color)
-    l1 = ax1.plot(all_losses, color=color, label="Train Loss")
+    l1 = ax1.plot(all_training_losses, color=color, label="Train Loss")
     ax1.tick_params(axis="y", labelcolor=color)
 
     ax2 = ax1.twinx()
     color = "tab:red"
-    ax2.set_ylabel("Val RMSE (Log Returns)", color=color)
-    l2 = ax2.plot(all_rsme, color=color, label="Val RMSE")
+    ax2.set_ylabel("Val Loss", color=color)
+    l2 = ax2.plot(all_val_losses, color=color, label="Val Loss")
     ax2.tick_params(axis="y", labelcolor=color)
 
     ax1.set_title("Loss and Error Over Epochs")
@@ -172,13 +208,13 @@ def save_and_plot_model_performance(
     labs = [line.get_label() for line in lines]
     ax1.legend(lines, labs, loc="upper right")
 
-    ax3.plot(all_dim_accuracies, color="tab:green", label="Directional Accuracy")
+    ax3.plot(all_accuracies, color="tab:green", label="Accuracy")
     ax3.axhline(
         y=0.50, color="black", linestyle="--", alpha=0.5, label="Random Guess (50%)"
     )
     ax3.set_xlabel("Epochs")
     ax3.set_ylabel("Accuracy (%)")
-    ax3.set_title("Model Directional Accuracy")
+    ax3.set_title("Model Accuracy")
     ax3.legend(loc="upper right")
 
     fig.tight_layout()
@@ -187,39 +223,65 @@ def save_and_plot_model_performance(
     plt.close(fig)
 
 
-def plot_model_predictions_over_targets(
+def plot_model_test_performance(
     model: StockPredictionModel,
-    model_config: ModelConfig,
     test_dataset: Dataset,
     epoch: int,
 ) -> None:
     model.eval()
 
-    sampler: RandomSampler = RandomSampler(
-        test_dataset,  # pyright: ignore[reportArgumentType]
-        replacement=False,
-    )
-    dataloader_with_sampler: DataLoader = DataLoader(
-        test_dataset, batch_size=model_config.batch_size, sampler=sampler
-    )
-    X_sample, y_sample = next(iter(dataloader_with_sampler))
+    sampler = RandomSampler(test_dataset, replacement=False)  # pyright: ignore[reportArgumentType]
+    dataloader = DataLoader(test_dataset, batch_size=2048, sampler=sampler)
+
+    X_sample, y_sample = next(iter(dataloader))
+    X_sample, y_sample = X_sample.to(device), y_sample.to(device)
 
     with torch.no_grad():
-        predictions_normalized, mean, std = model(X_sample.to(device))
-        # Denormalize the prediction (Z-Score -> Actual Log Return)
-        predictions_real: torch.Tensor = (predictions_normalized * std) + mean
-        predictions: torch.Tensor = predictions_real.cpu()
+        logits = model(X_sample)
+        # Convert logits to probabilities (0.0 to 1.0)
+        probabilities: NDArray = torch.sigmoid(logits).cpu().numpy().flatten()
+        targets: NDArray = y_sample.cpu().numpy().flatten()
+        predictions: NDArray = (probabilities > 0.5).astype(float)
 
-    plt.figure(figsize=(12, 6))
-    plt.plot(predictions[:100], label="Predictions")
-    plt.plot(y_sample[:100], label="Actual Target", alpha=0.5)
-    plt.title("Predictions vs Actuals")
-    plt.legend()
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-    debug_directory: Path = model_config.model_info_dir / "debug_predictions"
+    # Green (up) bars should ideally be clustered tightly on the right.
+    # Red (down) bars clustered tightly on the left
+    ax1.hist(
+        probabilities[targets == 1],
+        bins=50,
+        alpha=0.6,
+        color="green",
+        label="Actual: UP",
+        range=(0, 1),
+    )
+    ax1.hist(
+        probabilities[targets == 0],
+        bins=50,
+        alpha=0.6,
+        color="red",
+        label="Actual: DOWN",
+        range=(0, 1),
+    )
+    ax1.axvline(0.5, color="black", linestyle="--", alpha=0.3, label="Threshold")
+    ax1.set_title(f"Prediction Confidence Distribution (Epoch {epoch})")
+    ax1.set_xlabel("Predicted Probability (0=Down, 1=Up)")
+    ax1.set_ylabel("Count")
+    ax1.legend()
+
+    cm: NDArray = confusion_matrix(targets, predictions)
+    display: ConfusionMatrixDisplay = ConfusionMatrixDisplay(
+        confusion_matrix=cm, display_labels=["Down", "Up"]
+    )
+    display.plot(cmap="Blues", ax=ax2, colorbar=True)
+    ax2.set_title("Confusion Matrix (Normalized)")
+    ax2.set_ylabel("True Label")
+    ax2.set_xlabel("Predicted Label")
+
+    plt.tight_layout()
+    debug_directory = model.config.model_info_dir / "debug_predictions"
     os.makedirs(debug_directory, exist_ok=True)
     plt.savefig(debug_directory / f"epoch_{epoch}.png")
-
     plt.close()
 
 
@@ -254,7 +316,7 @@ def main(model_config: ModelConfig) -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
-        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REUSE,
         target=model_config.num_training_files,
     )
 
@@ -274,21 +336,18 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=32,
-        num_layers=1,
+        hidden_dim=128,
+        num_layers=2,
         output_dim=1,
-        dropout=0.2,
+        dropout=0.3,
         target_feature_idx=target_idx,
         device=device,
+        model_config=model_config,
     ).to(device)
-    # huber_loss: nn.HuberLoss = nn.HuberLoss()
-    mse_loss: nn.MSELoss = nn.MSELoss()
-    directional_loss: DirectionalLoss = DirectionalLoss(
-        loss=mse_loss, penalty_factor=1.5
-    ).to(device)
+    criterion = nn.BCEWithLogitsLoss().to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
-        lr=model_config.learning_rate,
+        lr=model.config.learning_rate,
         weight_decay=1e-5,
     )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
@@ -298,46 +357,44 @@ def main(model_config: ModelConfig) -> None:
         patience=10,
     )
 
-    all_losses: List[float] = []
-    all_rmse: List[float] = []
-    all_dim_accuracies: List[float] = []
+    all_training_losses: List[float] = []
+    all_val_losses: List[float] = []
+    all_accuracies: List[float] = []
 
-    best_val_rmse: float = float("inf")
+    best_loss: float = float("inf")
     counter: int = 0
-    for epoch in tqdm(range(model_config.epochs), desc="Number of Epochs Left"):
+    for epoch in tqdm(range(model.config.epochs), desc="Number of Epochs Left"):
         losses: float = train_step(
             model,
             data_loaders.train,
-            directional_loss,
+            criterion,
             optimizer,
             epoch,
         )
-        all_losses.append(losses)
+        all_training_losses.append(losses)
 
-        rsme, dim_accuracy = val_step(model, data_loaders.val, scheduler, epoch)
-        all_rmse.append(rsme)
-        all_dim_accuracies.append(dim_accuracy)
+        loss, accuracy = val_step(model, data_loaders.val, criterion, scheduler, epoch)
+        all_training_losses.append(loss)
+        all_val_losses.append(accuracy)
 
-        if rsme < best_val_rmse:
-            best_val_rmse = rsme
+        if loss < best_loss:
+            best_loss = loss
             counter = 0
             torch.save(model.state_dict(), model_save_dir / "best_model.pt")
         else:
             counter += 1
             print(f"No improvement for {counter} epochs.")
-            if counter >= model_config.early_stopping_patience:
+            if counter >= model.config.early_stopping_patience:
                 print("Early stopping triggered!")
                 break
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
         save_and_plot_model_performance(
-            model_config, all_losses, all_rmse, all_dim_accuracies
+            model.config, all_training_losses, all_val_losses, all_accuracies
         )
 
-        plot_model_predictions_over_targets(
-            model, model_config, data_loaders.test.dataset, epoch
-        )
+        plot_model_test_performance(model, data_loaders.test.dataset, epoch)
 
     print("Model training complete!")
 
@@ -349,10 +406,12 @@ def main(model_config: ModelConfig) -> None:
     print(f"Loading best model from: {best_model_path}")
     model.load_state_dict(torch.load(best_model_path))
 
-    test_rmse, test_acc = evaluate(model, data_loaders.test, desc="Testing model")
+    test_rmse, test_acc = evaluate(
+        model, data_loaders.test, criterion, desc="Testing model"
+    )
 
-    print(f"\nFinal Test RMSE: {test_rmse:.5f}")
-    print(f"Final Test Directional Accuracy: {test_acc:.3%}")
+    print(f"\nFinal Test Loss: {test_rmse:.5f}")
+    print(f"Final Test Accuracy: {test_acc:.3%}")
 
     if test_acc > 0.5:
         print(f"{GREEN}SUCCESS: The model beats random guessing!{RESET}")

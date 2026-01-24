@@ -1,7 +1,9 @@
-from typing import Self, Tuple
+from typing import Self
 
 import torch
 import torch.nn as nn
+
+from parse_config import ModelConfig
 
 
 class StockPredictionModel(nn.Module):
@@ -14,6 +16,7 @@ class StockPredictionModel(nn.Module):
         dropout: float,
         target_feature_idx: int,
         device: torch.device,
+        model_config: ModelConfig,
     ) -> None:
         super().__init__()
 
@@ -21,6 +24,7 @@ class StockPredictionModel(nn.Module):
         self.hidden_dim: int = hidden_dim
         self.target_feature_idx: int = target_feature_idx
         self.device: torch.device = device
+        self.config: ModelConfig = model_config
 
         self.lstm: nn.LSTM = nn.LSTM(
             input_dim,
@@ -43,9 +47,7 @@ class StockPredictionModel(nn.Module):
             nn.Linear(hidden_dim // 2, output_dim, device=device),
         )
 
-    def forward(
-        self: Self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
         # Doing instance normalization for each input tensor to force the model to generalize
         # This technique is called RevIN
         # x shape: [Batch, Sequence, Features]
@@ -65,38 +67,7 @@ class StockPredictionModel(nn.Module):
         out = out[:, -1, :]
         out = self.layer_norm(out)
 
-        # out = normalized Z-Score here
-        out_z_score: torch.Tensor = self.fc(out)
+        # We're doing binary classification now
+        out_logits: torch.Tensor = self.fc(out)
 
-        # Denormalize out and rescale to match the original magnitude
-        target_mean: torch.Tensor = x_mean[:, :, self.target_feature_idx]
-        target_std: torch.Tensor = x_std[:, :, self.target_feature_idx]
-
-        # This turns it back into log returns
-        out_denormalized: torch.Tensor = (out_z_score * target_std) + target_mean
-
-        return out_denormalized, target_mean, target_std
-
-
-class DirectionalLoss(nn.Module):
-    def __init__(
-        self, loss: nn.Module, penalty_factor: float = 5.0, scale_factor: float = 100.0
-    ):
-        super().__init__()
-        self.loss: nn.Module = loss
-        self.penalty_factor: float = penalty_factor
-        self.scale_factor: float = scale_factor
-
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        # Scale up the inputs as log returns make the inputs very small
-        pred_scaled: torch.Tensor = y_pred * self.scale_factor
-        true_scaled: torch.Tensor = y_true * self.scale_factor
-
-        mse_loss: torch.Tensor = self.loss(pred_scaled, true_scaled)
-
-        # Penalty applies if signs are different
-        direction_penalty: torch.Tensor = torch.mean(
-            torch.relu(-pred_scaled * true_scaled)
-        )
-
-        return mse_loss + (self.penalty_factor * direction_penalty)
+        return out_logits
