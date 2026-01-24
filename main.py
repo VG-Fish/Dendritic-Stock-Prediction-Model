@@ -316,7 +316,7 @@ def main(model_config: ModelConfig) -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
-        dataset_creation_option=NASDAQDatasetCreationOptions.REUSE,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
         target=model_config.num_training_files,
     )
 
