@@ -224,7 +224,7 @@ class TrainingDataCreator:
         return DataLoader(
             NASDAQDataset(df),
             batch_size=self.model_config.batch_size,
-            num_workers=0,
+            num_workers=1,
         )
 
     def _create_dataloaders(

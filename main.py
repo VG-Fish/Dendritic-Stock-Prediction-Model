@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 from pathlib import Path
@@ -140,15 +141,16 @@ def evaluate(
         output_dict=True,
         digits=4,
     )
-    classification_report_df: pl.DataFrame = pl.DataFrame(report)
-    if epoch:
-        classification_report_directory: Path = (
-            model.config.model_info_dir / "classification_reports"
-        )
-        os.makedirs(classification_report_directory, exist_ok=True)
-        classification_report_df.write_json(
-            classification_report_directory / f"report_{epoch}.json"
-        )
+    classification_report_directory: Path = (
+        model.config.model_info_dir / "classification_reports"
+    )
+    os.makedirs(classification_report_directory, exist_ok=True)
+    ending: str = f"_{epoch}" if epoch else ""
+    with open(
+        classification_report_directory / f"report{ending}.json",
+        "w",
+    ) as f:
+        json.dump(report, f, indent=4)
 
     return avg_loss, accuracy
 
@@ -342,9 +344,10 @@ def clean_dataset_directory() -> None:
 
 
 def main(model_config: ModelConfig) -> None:
+    clean_dataset_directory()
+
     model_save_dir: Path = model_config.model_info_dir / "models"
     os.makedirs(model_save_dir, exist_ok=True)
-    clean_dataset_directory()
 
     downloader: NASDAQDownloader = NASDAQDownloader(model_config)
     info: NASDAQDatasetInfo = downloader.download_dataset(
