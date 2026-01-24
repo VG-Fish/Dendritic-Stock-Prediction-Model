@@ -21,7 +21,7 @@ from download import (
     NASDAQDownloader,
     SecurityType,
 )
-from main import plot_model_performance, prepare_data
+from main import prepare_data, save_and_plot_model_performance
 from model import StockPredictionModel
 
 # Initialize important variables
@@ -229,7 +229,7 @@ def main() -> None:
         print()
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epochs}.pt")
-    plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
+    save_and_plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
     print("Model training complete!")
 
 

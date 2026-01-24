@@ -5,6 +5,7 @@ from typing import List, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
+import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -130,14 +131,25 @@ def val_step(
     return val_rmse, dim_accuracy
 
 
-def plot_model_performance(
+def save_and_plot_model_performance(
     model_config: ModelConfig,
     all_losses: List[float],
     all_rsme: List[float],
     all_dim_accuracies: List[float],
 ) -> None:
-    print("Saving model performance...")
+    print("Saving model performance to CSV...")
+    model_performance_df: pl.DataFrame = pl.DataFrame(
+        {
+            "Training Losses": all_losses,
+            "Val RSME": all_rsme,
+            "Dimensional Accuracy": all_dim_accuracies,
+        }
+    )
+    model_performance_df.write_csv(
+        model_config.model_info_dir / "model_performance.csv"
+    )
 
+    print("Saving model performance to graphs...")
     fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
     color = "tab:blue"
@@ -308,7 +320,10 @@ def main(model_config: ModelConfig) -> None:
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
-        plot_model_performance(model_config, all_losses, all_rmse, all_dim_accuracies)
+        save_and_plot_model_performance(
+            model_config, all_losses, all_rmse, all_dim_accuracies
+        )
+
         plot_model_predictions_over_targets(
             model, model_config, data_loaders.test.dataset, epoch
         )
