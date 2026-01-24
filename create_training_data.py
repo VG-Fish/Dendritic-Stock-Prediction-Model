@@ -1,5 +1,7 @@
+import shutil
 from dataclasses import dataclass
 from datetime import date, timedelta
+from enum import IntEnum
 from pathlib import Path
 from typing import Dict, List, Self
 
@@ -20,6 +22,40 @@ class SplitDFDatasets:
     train: pl.DataFrame
     val: pl.DataFrame
     test: pl.DataFrame
+
+
+class DatasetLoadingConfig(IntEnum):
+    """
+    Options to determine what `TrainingDataCreator().create_data_loaders_from()` should do when creating a new dataset. All the options
+    will only be applied if an existing `scaled_dataset` directory exists.
+
+    `IGNORE` creates a new directory with the same name as the existing dataset directory but adds a number to the end.
+
+    `REPLACE` will remove all the files in the existing directory and start from scratch.
+
+    `REUSE` will make reuse the existing dataset.
+
+    `STOP` will raise an error if the existing dataset directory exists.
+    """
+
+    IGNORE = 1
+    REPLACE = 2
+    REUSE = 3
+    STOP = 4
+
+    # Code modified from https://stackoverflow.com/a/57896232
+    @classmethod
+    def create_unique_path_from(
+        cls: type,
+        parent_directory: Path,
+    ) -> Path:
+        candidate: Path = parent_directory
+        counter: int = 1
+        while candidate.exists():
+            candidate = parent_directory.with_name(f"{parent_directory.name}_{counter}")
+            counter += 1
+
+        return candidate
 
 
 class TrainingDataCreator:
@@ -209,13 +245,30 @@ class TrainingDataCreator:
 
     def create_data_loaders_from(
         self: Self,
-        directory: Path,
+        data_directory: Path,
         save_directory: Path,
-        load_datasets_from_memory: bool = False,
+        dataset_loading_config: DatasetLoadingConfig = DatasetLoadingConfig.REUSE,
     ) -> NASDAQDataLoaders:
         dataset_directory = save_directory / "scaled_datasets"
+        reuse_dataset: bool = False
+        match dataset_loading_config:
+            case DatasetLoadingConfig.IGNORE:
+                dataset_directory = DatasetLoadingConfig.create_unique_path_from(
+                    dataset_directory
+                )
+                print(f"Training dataset will be saved to: {dataset_directory}")
+            case DatasetLoadingConfig.REPLACE:
+                print(
+                    f"Removing existing training dataset directory: {dataset_directory}"
+                )
+                if dataset_directory.exists():
+                    shutil.rmtree(dataset_directory)
+            case DatasetLoadingConfig.REUSE:
+                reuse_dataset = dataset_directory.exists()
+            case DatasetLoadingConfig.STOP:
+                raise FileExistsError(f"'{dataset_directory}' already exists.")
 
-        if load_datasets_from_memory and dataset_directory.exists():
+        if reuse_dataset:
             print("Loading datasets from memory...")
 
             train_df: pl.DataFrame = pl.read_parquet(
@@ -226,7 +279,7 @@ class TrainingDataCreator:
 
             return self._create_dataloaders(train_df, val_df, test_df)
 
-        datasets: SplitDFDatasets = self._create_datasets_from(directory)
+        datasets: SplitDFDatasets = self._create_datasets_from(data_directory)
 
         train_df = datasets.train
         val_df = datasets.val

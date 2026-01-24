@@ -20,7 +20,7 @@ from torch.utils.data import Dataset, RandomSampler
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
-from create_training_data import TrainingDataCreator
+from create_training_data import DatasetLoadingConfig, TrainingDataCreator
 from download import (
     NASDAQDatasetCreationOptions,
     NASDAQDatasetInfo,
@@ -329,7 +329,7 @@ def main(model_config: ModelConfig) -> None:
     data_loaders: NASDAQDataLoaders = training_data_creator.create_data_loaders_from(
         info.stocks_directory,
         model_config.model_info_dir,
-        load_datasets_from_memory=model_config.load_dataset_from_memory,
+        dataset_loading_config=DatasetLoadingConfig.STOP,
     )
 
     # Get 'Close' column dynamically
@@ -341,7 +341,7 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=128,
+        hidden_dim=64,
         num_layers=2,
         output_dim=1,
         dropout=0.3,

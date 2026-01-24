@@ -8,6 +8,5 @@
   "epochs": 300,
   "early_stopping_patience": 25,
   "num_training_files": 3200,
-  "load_dataset_from_memory": true,
   "model_info_dir": "lstm_model_info"
 }

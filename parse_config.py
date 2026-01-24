@@ -30,7 +30,6 @@ class ModelConfig:
     epochs: int
     early_stopping_patience: int
     num_training_files: int
-    load_dataset_from_memory: bool
     model_info_dir: Path
 
 
@@ -64,7 +63,6 @@ def get_config_from_json(config_path: Union[str, Path]) -> Optional[ModelConfig]
                 epochs=config["epochs"],
                 early_stopping_patience=config.get("early_stopping_patience", 15),
                 num_training_files=config["num_training_files"],
-                load_dataset_from_memory=config.get("load_dataset_from_memory", False),
                 model_info_dir=config["model_info_dir"],
             )
         except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as e:
