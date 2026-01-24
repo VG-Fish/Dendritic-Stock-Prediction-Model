@@ -142,8 +142,10 @@ def evaluate(
     )
     classification_report_df: pl.DataFrame = pl.DataFrame(report)
     if epoch:
-        classification_report_df.write_csv(
-            model.config.model_info_dir / "classification_reports" / f"report_{epoch}"
+        classification_report_df.write_json(
+            model.config.model_info_dir
+            / "classification_reports"
+            / f"report_{epoch}.json"
         )
 
     return avg_loss, accuracy
@@ -329,7 +331,7 @@ def main(model_config: ModelConfig) -> None:
     data_loaders: NASDAQDataLoaders = training_data_creator.create_data_loaders_from(
         info.stocks_directory,
         model_config.model_info_dir,
-        dataset_loading_config=DatasetLoadingConfig.STOP,
+        dataset_loading_config=DatasetLoadingConfig.REUSE,
     )
 
     # Get 'Close' column dynamically
