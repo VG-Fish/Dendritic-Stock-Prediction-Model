@@ -1,7 +1,7 @@
-import argparse
 import os
+import shutil
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import List, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, RandomSampler
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 
-from create_training_data import create_data_loaders_from
+from create_training_data import TrainingDataCreator
 from download import (
     NASDAQDatasetCreationOptions,
     NASDAQDatasetInfo,
@@ -21,24 +21,16 @@ from download import (
     SecurityType,
 )
 from model import DirectionalMSELoss, StockPredictionModel
+from parse_config import ModelConfig, get_config_from_json
+from stocks import NASDAQDataLoaders
 
-# Initialize important variables
-RANDOM_SEED: int = 1290
-SEQUENCE_LENGTH: int = 30
-TRAIN_FRACTION: float = 0.8
-VAL_FRACTION: float = 0.1
-BATCH_SIZE: int = 1024
-LEARNING_RATE: float = 0.0005
-EPOCHS: int = 200  # Early stopping will most likely be triggered before this is reached
-LOAD_DATASET_FROM_MEMORY: bool = False
-MODEL_INFO_DIR: Path = Path("lstm_model_info")
+model_config: ModelConfig
 
 # ANSI escape codes
 RED: str = "\033[31m"
 GREEN: str = "\033[32m"
 RESET: str = "\033[0m"
 
-torch.manual_seed(RANDOM_SEED)
 device: torch.device = torch.device("cpu")
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -139,7 +131,10 @@ def val_step(
 
 
 def plot_model_performance(
-    all_losses: List[float], all_rsme: List[float], all_dim_accuracies: List[float]
+    model_config: ModelConfig,
+    all_losses: List[float],
+    all_rsme: List[float],
+    all_dim_accuracies: List[float],
 ) -> None:
     print("Saving model performance...")
 
@@ -174,13 +169,16 @@ def plot_model_performance(
     ax3.legend(loc="upper right")
 
     fig.tight_layout()
-    plt.savefig(MODEL_INFO_DIR / "baseline_model_performance.png")
+    plt.savefig(model_config.model_info_dir / "baseline_model_performance.png")
 
     plt.close(fig)
 
 
 def plot_model_predictions_over_targets(
-    model: StockPredictionModel, test_dataset: Dataset, epoch: int
+    model: StockPredictionModel,
+    model_config: ModelConfig,
+    test_dataset: Dataset,
+    epoch: int,
 ) -> None:
     model.eval()
 
@@ -189,13 +187,15 @@ def plot_model_predictions_over_targets(
         replacement=False,
     )
     dataloader_with_sampler: DataLoader = DataLoader(
-        test_dataset, batch_size=BATCH_SIZE, sampler=sampler
+        test_dataset, batch_size=model_config.batch_size, sampler=sampler
     )
     X_sample, y_sample = next(iter(dataloader_with_sampler))
 
     with torch.no_grad():
-        predictions, _, _ = model(X_sample.to(device))
-        predictions = predictions.cpu()
+        predictions_normalized, mean, std = model(X_sample.to(device))
+        # Denormalize the prediction (Z-Score -> Actual Log Return)
+        predictions_real: torch.Tensor = (predictions_normalized * std) + mean
+        predictions: torch.Tensor = predictions_real.cpu()
 
     plt.figure(figsize=(12, 6))
     plt.plot(predictions[:100], label="Predictions")
@@ -203,16 +203,24 @@ def plot_model_predictions_over_targets(
     plt.title("Predictions vs Actuals")
     plt.legend()
 
-    debug_directory: Path = MODEL_INFO_DIR / "debug_predictions"
+    debug_directory: Path = model_config.model_info_dir / "debug_predictions"
     os.makedirs(debug_directory, exist_ok=True)
     plt.savefig(debug_directory / f"epoch_{epoch}.png")
 
     plt.close()
 
 
-def main() -> None:
-    model_save_dir: Path = MODEL_INFO_DIR / "models"
+def clean_debug_predictions() -> None:
+    debug_directory: Path = model_config.model_info_dir / "debug_predictions"
+    if debug_directory.exists():
+        print(f"Cleaning {debug_directory}...")
+        shutil.rmtree(debug_directory)
+
+
+def main(model_config: ModelConfig) -> None:
+    model_save_dir: Path = model_config.model_info_dir / "models"
     os.makedirs(model_save_dir, exist_ok=True)
+    clean_debug_predictions()
 
     downloader: NASDAQDownloader = NASDAQDownloader()
     info: NASDAQDatasetInfo = downloader.download_dataset(
@@ -222,14 +230,15 @@ def main() -> None:
         target=500,
     )
 
-    data_loaders = create_data_loaders_from(
+    training_data_creator: TrainingDataCreator = TrainingDataCreator(model_config)
+    data_loaders: NASDAQDataLoaders = training_data_creator.create_data_loaders_from(
         info.stocks_directory,
-        MODEL_INFO_DIR,
-        load_datasets_from_memory=LOAD_DATASET_FROM_MEMORY,
+        model_config.model_info_dir,
+        load_datasets_from_memory=model_config.load_dataset_from_memory,
     )
 
     # Get close column dynamically
-    feature_names = data_loaders.train.dataset.feature_cols  # pyright: ignore[reportAttributeAccessIssue]
+    feature_names: List[str] = data_loaders.train.dataset.feature_cols  # pyright: ignore[reportAttributeAccessIssue]
     try:
         target_idx = feature_names.index("Close")
     except ValueError:
@@ -240,17 +249,17 @@ def main() -> None:
         hidden_dim=64,
         num_layers=2,
         output_dim=1,
-        dropout=0.2,
+        dropout=0.5,
         target_feature_idx=target_idx,
         device=device,
     ).to(device)
-    huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="sum").to(device)
+    # huber_loss: nn.HuberLoss = nn.HuberLoss(reduction="mean").to(device)
     directional_mse_loss: DirectionalMSELoss = DirectionalMSELoss(
-        penalty_factor=10.0
+        penalty_factor=5.0
     ).to(device)
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
-        lr=LEARNING_RATE,
+        lr=model_config.learning_rate,
     )
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -264,14 +273,14 @@ def main() -> None:
     all_dim_accuracies: List[float] = []
 
     best_val_rmse: float = float("inf")
-    patience: int = 15
+    patience: int = 20
     counter: int = 0
-    loss_epoch_switch: int = 20
-    for epoch in tqdm(range(EPOCHS), desc="Number of Epochs Left"):
+    # loss_epoch_switch: int = 20
+    for epoch in tqdm(range(model_config.epochs), desc="Number of Epochs Left"):
         losses: float = train_step(
             model,
             data_loaders.train,
-            huber_loss,  # if epoch <= loss_epoch_switch else directional_mse_loss,
+            directional_mse_loss,
             optimizer,
             epoch,
         )
@@ -294,8 +303,10 @@ def main() -> None:
 
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
-        plot_model_performance(all_losses, all_rmse, all_dim_accuracies)
-        plot_model_predictions_over_targets(model, data_loaders.test.dataset, epoch)
+        plot_model_performance(model_config, all_losses, all_rmse, all_dim_accuracies)
+        plot_model_predictions_over_targets(
+            model, model_config, data_loaders.test.dataset, epoch
+        )
 
     print("Model training complete!")
 
@@ -318,115 +329,8 @@ def main() -> None:
         print(f"{RED}FAILURE: The model failed to generalize.{RESET}")
 
 
-def float_in_range(low: float, high: float) -> Callable:
-    def checker(value: str) -> float:
-        try:
-            f_value = float(value)
-        except ValueError:
-            raise argparse.ArgumentTypeError(
-                f"{RED}'{value}' is not a valid float.{RESET}"
-            )
-
-        f_value = float(value)
-        if f_value < low or f_value >= high:
-            raise argparse.ArgumentTypeError(
-                f"{RED}Value must be in [{low}, {high}){RESET}"
-            )
-        return f_value
-
-    return checker
-
-
-def parse_args() -> argparse.Namespace:
-    global \
-        RANDOM_SEED, \
-        SEQUENCE_LENGTH, \
-        TRAIN_FRACTION, \
-        VAL_FRACTION, \
-        BATCH_SIZE, \
-        LEARNING_RATE, \
-        EPOCHS, \
-        MODEL_INFO_DIR
-
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(
-        prog="Dendritic LSTM Stock Prediction Model",
-        description="This program trains a Dendritic LSTM Stock Prediction Model on data from thousands of companies from the NASDAQ.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "--random_seed", help="Set the random seed.", type=int, default=RANDOM_SEED
-    )
-    parser.add_argument(
-        "--sequence_length",
-        help="How many days the model should consider to predict the price for the next day.",
-        type=int,
-        default=SEQUENCE_LENGTH,
-    )
-    parser.add_argument(
-        "--train_fraction",
-        help="How big the training dataset should be. This parameter should be in [0, 1).",
-        type=float_in_range(0.0, 1.0),
-        default=TRAIN_FRACTION,
-    )
-    parser.add_argument(
-        "--val_fraction",
-        help="How big the validation dataset should be. This parameter should be in [0, 1).",
-        type=float_in_range(0.0, 1.0),
-        default=VAL_FRACTION,
-    )
-    parser.add_argument(
-        "--batch_size",
-        help="How big each batch size should be. This parameter should ideally be a power of 2.",
-        type=int,
-        default=BATCH_SIZE,
-    )
-    parser.add_argument(
-        "--learning_rate",
-        help="The model learning rate.",
-        type=float,
-        default=LEARNING_RATE,
-    )
-    parser.add_argument(
-        "--epochs",
-        help="The number of epochs.",
-        type=int,
-        default=EPOCHS,
-    )
-    parser.add_argument(
-        "--load_dataset_from_memory",
-        help="Whether to load all of the datasets from memory. (This is a flag)",
-        action="store_true",
-        default=LOAD_DATASET_FROM_MEMORY,
-    )
-    parser.add_argument(
-        "--model_info_dir",
-        help="The directory to save all model related stuff to.",
-        type=str,
-        default=MODEL_INFO_DIR,
-    )
-    args: argparse.Namespace = parser.parse_args()
-
-    if args.train_fraction + args.val_fraction >= 1.0:
-        parser.error(
-            f"{RED}The sum of --train_fraction ({args.train_fraction}) and "
-            f"--val_fraction ({args.val_fraction}) must be less than 1.0 "
-            f"to leave room for the test set.{RESET}"
-        )
-    return args
-
-
 if __name__ == "__main__":
-    args: argparse.Namespace = parse_args()
+    model_config = get_config_from_json("lstm_model_config.json")  # pyright: ignore[reportAssignmentType]
+    torch.manual_seed(model_config.random_seed)
 
-    RANDOM_SEED = args.random_seed
-    torch.manual_seed(RANDOM_SEED)
-    SEQUENCE_LENGTH = args.sequence_length
-    TRAIN_FRACTION = args.train_fraction
-    VAL_FRACTION = args.val_fraction
-    BATCH_SIZE = args.batch_size
-    LEARNING_RATE = args.learning_rate
-    EPOCHS = args.epochs
-    LOAD_DATASET_FROM_MEMORY = args.load_dataset_from_memory
-    MODEL_INFO_DIR = Path(args.model_info_dir)
-
-    main()
+    main(model_config)

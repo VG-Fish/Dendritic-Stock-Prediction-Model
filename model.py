@@ -35,7 +35,8 @@ class StockPredictionModel(nn.Module):
         self.dropout: nn.Dropout = nn.Dropout(dropout)
 
         self.fc_1: nn.Linear = nn.Linear(hidden_dim, hidden_dim // 2, device=device)
-        self.relu: nn.ReLU = nn.ReLU()
+        # ReLU kills negative neurons, but having negative neurons could be valuable as they can be correlated to bearish trends
+        self.relu: nn.LeakyReLU = nn.LeakyReLU()
         self.fc_2: nn.Linear = nn.Linear(hidden_dim // 2, output_dim, device=device)
 
     def forward(
