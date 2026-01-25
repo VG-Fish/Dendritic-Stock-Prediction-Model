@@ -368,8 +368,8 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=32,
-        num_layers=1,
+        hidden_dim=256,
+        num_layers=2,
         output_dim=1,
         dropout=0.3,
         target_feature_idx=target_idx,
@@ -390,7 +390,7 @@ def main(model_config: ModelConfig) -> None:
     optimizer: optim.AdamW = optim.AdamW(
         model.parameters(),
         lr=model.config.learning_rate,
-        weight_decay=1e-3,
+        weight_decay=1e-4,
     )
 
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
@@ -450,7 +450,7 @@ def main(model_config: ModelConfig) -> None:
 
     print("Model training complete!")
 
-    print("\n" + "=" * 30)
+    print("=" * 30)
     print("Running final test evaluation...")
     print("=" * 30)
 

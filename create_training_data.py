@@ -157,10 +157,9 @@ class TrainingDataCreator:
                 .drop("High", "Low", "Close", "Volume", "Open")
                 # Remove NaNs, nulls, and infinities
                 .fill_nan(None)
-                .drop_nulls()
                 .filter(
                     pl.all_horizontal(
-                        pl.all().exclude("Path", "Index", "Date").is_finite()
+                        pl.all().exclude("Path", "Index", "Date", "Target").is_finite()
                     ),
                 )
             )
@@ -196,6 +195,7 @@ class TrainingDataCreator:
                 # pl.col("Path").cast(pl.Categorical).to_physical().alias("Stock ID"),
             )
             .drop("Path", "Index")
+            .drop_nulls()
         )
 
         self._counts = df["Target"].value_counts()
