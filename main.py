@@ -356,7 +356,7 @@ def main(model_config: ModelConfig) -> None:
     data_loaders: NASDAQDataLoaders = training_data_creator.create_data_loaders_from(
         info.stocks_directory,
         model_config.model_info_dir,
-        dataset_loading_config=DatasetLoadingConfig.REUSE,
+        dataset_loading_config=DatasetLoadingConfig.REPLACE,
     )
 
     # Get 'Close' column dynamically
@@ -368,8 +368,8 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=64,
-        num_layers=2,
+        hidden_dim=32,
+        num_layers=1,
         output_dim=1,
         dropout=0.3,
         target_feature_idx=target_idx,
@@ -387,10 +387,10 @@ def main(model_config: ModelConfig) -> None:
         pos_weight=positive_weight
     ).to(device)
 
-    optimizer: optim.Adam = optim.Adam(
+    optimizer: optim.AdamW = optim.AdamW(
         model.parameters(),
         lr=model.config.learning_rate,
-        weight_decay=1e-5,
+        weight_decay=1e-3,
     )
 
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(

@@ -80,7 +80,6 @@ class TrainingDataCreator:
     def _create_datasets_from(self: Self, directory: Path) -> SplitDFDatasets:
         print(f"Scanning for CSVs in {directory}...")
 
-        window_size: int = self.model_config.sequence_length - 1
         glob: List = list(directory.glob("*.csv"))
         print(f"Going through {len(glob)} CSVs...")
         schema_overrides: Dict[str, type] = {
@@ -101,19 +100,17 @@ class TrainingDataCreator:
                     schema_overrides=schema_overrides,
                 )
                 .sort(["Path", "Date"])
-                # We make the rows where Volume = 0 equal to 1 as log(1) = 0
                 .with_columns(
                     pl.col("Date").dt.date(),
                     pl.int_range(pl.len()).over("Path").alias("Index"),
-                    # log1p() is better for Volume as log1p(0) = 0 & is more stable for smaller x
-                    pl.col("Close").log1p().diff().over("Path").alias("Log Return"),
+                    pl.col("Close").log().diff().over("Path").alias("Log Return"),
                     (
                         pl.col("Open").log()
                         - pl.col("Close").log().shift(1).over("Path")
                     ).alias("Log Overnight"),
                     (pl.col("High").log() - pl.col("Low").log()).alias("Log Range"),
                     pl.col("Volume")
-                    .log()
+                    .log1p()
                     .diff()
                     .over("Path")
                     .alias("Log Volume Change"),
@@ -137,13 +134,22 @@ class TrainingDataCreator:
                 # Calculate MACD Signal line (9 EMA of MACD)
                 # EMA = exponential moving average, which places more weight on more recent data points
                 .with_columns(
-                    pl.col("MACD").ewm_mean(span=9).over("Path").alias("MACD Signal")
-                )
-                .with_columns(
+                    pl.col("MACD").ewm_mean(span=9).over("Path").alias("MACD Signal"),
                     pl.col("Log Return")
                     .rolling_std(window_size=self.model_config.sequence_length)
                     .over("Path")
-                    .alias("Rolling STD")
+                    .alias("Rolling STD"),
+                    # Shift Log Return to the left to see tomorrow's return today
+                    pl.col("Log Return").shift(-1).over("Path").alias("Next Return"),
+                )
+                .with_columns(
+                    pl.when(pl.col("Next Return") > 0.001)
+                    .then(1.0)
+                    .when(pl.col("Next Return") < -0.001)
+                    .then(0.0)
+                    .otherwise(None)
+                    .cast(pl.Float32)
+                    .alias("Target")
                 )
                 .with_columns(
                     pl.all().exclude("Path", "Date", "Index").cast(pl.Float32)
@@ -167,28 +173,29 @@ class TrainingDataCreator:
             )
             .having(pl.len() == self.model_config.sequence_length)
             .agg(
-                # This only marks stocks that move more than 0.1% in a day, rest become nulls
-                # 1 = stock went up, 0 = stock went down
-                pl.when(pl.col("Log Return") > 0.001)
-                .then(1)
-                .when(pl.col("Log Return") < -0.001)
-                .then(0)
-                .cast(pl.Float32)
-                .last()
-                .alias("Target"),
+                pl.col("Target").last(),
                 pl.col("Date").last(),
-                pl.col("RSI").slice(0, window_size),
-                pl.col("MACD").slice(0, window_size),
-                pl.col("MACD Signal").slice(0, window_size),
-                pl.col("SMA Ratio").slice(0, window_size),
-                pl.col("Rolling STD").slice(0, window_size),
-                pl.col("Log Return").slice(0, window_size).alias("Close"),
-                pl.col("Log Overnight").slice(0, window_size).alias("Open"),
-                pl.col("Log Volume Change").slice(0, window_size).alias("Volume"),
-                pl.col("Log Range").slice(0, window_size).alias("Range"),
+                pl.col("RSI").slice(0, self.model_config.sequence_length),
+                pl.col("MACD").slice(0, self.model_config.sequence_length),
+                pl.col("MACD Signal").slice(0, self.model_config.sequence_length),
+                pl.col("SMA Ratio").slice(0, self.model_config.sequence_length),
+                pl.col("Rolling STD").slice(0, self.model_config.sequence_length),
+                pl.col("Log Return")
+                .slice(0, self.model_config.sequence_length)
+                .alias("Close"),
+                pl.col("Log Overnight")
+                .slice(0, self.model_config.sequence_length)
+                .alias("Open"),
+                pl.col("Log Volume Change")
+                .slice(0, self.model_config.sequence_length)
+                .alias("Volume"),
+                pl.col("Log Range")
+                .slice(0, self.model_config.sequence_length)
+                .alias("Range"),
+                # This code forms the basis of adding embeddings
+                # pl.col("Path").cast(pl.Categorical).to_physical().alias("Stock ID"),
             )
             .drop("Path", "Index")
-            .drop_nulls()
         )
 
         self._counts = df["Target"].value_counts()
