@@ -61,7 +61,7 @@ def train_step(
     model.train()
     train_loss: float = 0
     for X_train, y_train in tqdm(
-        train_loader, desc=f"Number of Train Batches Left for Epoch - {epoch}"
+        train_loader, desc=f"Num Train Batches left for Epoch - {epoch}"
     ):
         X_train = X_train.to(device)
         y_train = y_train.to(device)
@@ -150,7 +150,7 @@ def evaluate(
         classification_report_directory / f"report{ending}.json",
         "w",
     ) as f:
-        json.dump(report, f, indent=4)
+        json.dump(report, f, indent=2)
 
     return avg_loss, accuracy
 
@@ -168,7 +168,7 @@ def val_step(
         criterion,
         epoch,
         save_model_classification_report=True,
-        desc=f"Val Epoch {epoch}",
+        desc=f"Num Val Batches Left for Epoch - {epoch}",
     )
 
     print(f"\nCurrent Accuracy: {val_accuracy:.3%}")
@@ -280,7 +280,7 @@ def plot_model_test_performance(
     ax1.set_ylabel("Count")
     ax1.legend()
 
-    cm: NDArray = confusion_matrix(targets, predictions, normalize=True)
+    cm: NDArray = confusion_matrix(targets, predictions, normalize="all")
     display: ConfusionMatrixDisplay = ConfusionMatrixDisplay(
         confusion_matrix=cm, display_labels=["Down", "Up"]
     )
@@ -381,12 +381,23 @@ def main(model_config: ModelConfig) -> None:
         device=device,
         model_config=model_config,
     ).to(device)
-    criterion = nn.BCEWithLogitsLoss().to(device)
+
+    # This helps the model adjust to class imbalance in the dataset dynamically
+    counts: pl.DataFrame = training_data_creator.counts.sort("Target")
+    negative_count: int = counts["count"][0]
+    positive_count: int = counts["count"][1]
+    weight_value: float = negative_count / positive_count
+    positive_weight: torch.Tensor = torch.tensor([weight_value]).to(device)
+    criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss(
+        pos_weight=positive_weight
+    ).to(device)
+
     optimizer: optim.Adam = optim.Adam(
         model.parameters(),
         lr=model.config.learning_rate,
         weight_decay=1e-5,
     )
+
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",

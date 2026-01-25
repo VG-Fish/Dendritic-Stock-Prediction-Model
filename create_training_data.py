@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import IntEnum
 from pathlib import Path
-from typing import Dict, List, Self
+from typing import Dict, List, Optional, Self
 
 import polars as pl
 from torch.utils.data.dataloader import DataLoader
@@ -61,6 +61,7 @@ class DatasetLoadingConfig(IntEnum):
 class TrainingDataCreator:
     def __init__(self: Self, model_config: ModelConfig) -> None:
         self.model_config: ModelConfig = model_config
+        self._counts: Optional[pl.DataFrame] = None
 
     # Gemini suggestion to improve dimensional accuracy
     # RSI calculates if the stock was overbought
@@ -166,8 +167,15 @@ class TrainingDataCreator:
             )
             .having(pl.len() == self.model_config.sequence_length)
             .agg(
-                # This makes the data appropriate for a classification model
-                (pl.col("Log Return").last() > 0).cast(pl.Float32).alias("Target"),
+                # This only marks stocks that move more than 0.1% in a day, rest become nulls
+                # 1 = stock went up, 0 = stock went down
+                pl.when(pl.col("Log Return") > 0.001)
+                .then(1)
+                .when(pl.col("Log Return") < -0.001)
+                .then(0)
+                .cast(pl.Float32)
+                .last()
+                .alias("Target"),
                 pl.col("Date").last(),
                 pl.col("RSI").slice(0, window_size),
                 pl.col("MACD").slice(0, window_size),
@@ -180,7 +188,10 @@ class TrainingDataCreator:
                 pl.col("Log Range").slice(0, window_size).alias("Range"),
             )
             .drop("Path", "Index")
+            .drop_nulls()
         )
+
+        self._counts = df["Target"].value_counts()
 
         date_cutoffs: pl.DataFrame = df.select(
             pl.col("Date")
@@ -247,26 +258,28 @@ class TrainingDataCreator:
         self: Self,
         data_directory: Path,
         save_directory: Path,
-        dataset_loading_config: DatasetLoadingConfig = DatasetLoadingConfig.REUSE,
+        dataset_loading_config: DatasetLoadingConfig = DatasetLoadingConfig.IGNORE,
     ) -> NASDAQDataLoaders:
         dataset_directory = save_directory / "scaled_datasets"
         reuse_dataset: bool = False
-        match dataset_loading_config:
-            case DatasetLoadingConfig.IGNORE:
-                dataset_directory = DatasetLoadingConfig.create_unique_path_from(
-                    dataset_directory
-                )
-                print(f"Training dataset will be saved to: {dataset_directory}")
-            case DatasetLoadingConfig.REPLACE:
-                print(
-                    f"Removing existing training dataset directory: {dataset_directory}"
-                )
-                if dataset_directory.exists():
-                    shutil.rmtree(dataset_directory)
-            case DatasetLoadingConfig.REUSE:
-                reuse_dataset = dataset_directory.exists()
-            case DatasetLoadingConfig.STOP:
-                raise FileExistsError(f"'{dataset_directory}' already exists.")
+
+        if dataset_directory.exists():
+            match dataset_loading_config:
+                case DatasetLoadingConfig.IGNORE:
+                    dataset_directory = DatasetLoadingConfig.create_unique_path_from(
+                        dataset_directory
+                    )
+                    print(f"Training dataset will be saved to: {dataset_directory}")
+                case DatasetLoadingConfig.REPLACE:
+                    print(
+                        f"Removing existing training dataset directory: {dataset_directory}"
+                    )
+                    if dataset_directory.exists():
+                        shutil.rmtree(dataset_directory)
+                case DatasetLoadingConfig.REUSE:
+                    reuse_dataset = True
+                case DatasetLoadingConfig.STOP:
+                    raise FileExistsError(f"'{dataset_directory}' already exists.")
 
         if reuse_dataset:
             print("Loading datasets from memory...")
@@ -276,6 +289,8 @@ class TrainingDataCreator:
             )
             val_df: pl.DataFrame = pl.read_parquet(dataset_directory / "val.parquet")
             test_df: pl.DataFrame = pl.read_parquet(dataset_directory / "test.parquet")
+
+            self._counts = train_df["Target"].value_counts()
 
             return self._create_dataloaders(train_df, val_df, test_df)
 
@@ -292,3 +307,12 @@ class TrainingDataCreator:
         test_df.write_parquet(dataset_directory / "test.parquet")
 
         return self._create_dataloaders(train_df, val_df, test_df)
+
+    @property
+    def counts(self: Self) -> pl.DataFrame:
+        if self._counts is None:
+            raise ValueError(
+                f"{RED}'self.counts' doesn't exist! Call 'self.create_data_loaders_from()' "
+                f"to regenerate 'self.counts'.{RESET}"
+            )
+        return self._counts

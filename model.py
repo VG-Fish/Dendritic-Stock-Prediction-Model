@@ -24,6 +24,7 @@ class StockPredictionModel(nn.Module):
         self.hidden_dim: int = hidden_dim
         self.target_feature_idx: int = target_feature_idx
         self.device: torch.device = device
+        # This variable is used outside of this script
         self.config: ModelConfig = model_config
 
         self.lstm: nn.LSTM = nn.LSTM(
