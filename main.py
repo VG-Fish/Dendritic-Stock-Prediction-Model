@@ -312,37 +312,33 @@ def plot_model_test_performance(
     plt.close()
 
 
-def clean_dataset_directory(model_config: ModelConfig) -> None:
-    debug_directory: Path = model_config.model_info_dir / "debug_predictions"
+def clean_dataset_directory(directory: Path) -> None:
+    debug_directory: Path = directory / "debug_predictions"
     if debug_directory.exists():
         print(f"Cleaning {debug_directory}...")
         shutil.rmtree(debug_directory)
 
-    model_directory: Path = model_config.model_info_dir / "models"
+    model_directory: Path = directory / "models"
     if model_directory.exists():
         print(f"Cleaning {model_directory}...")
         shutil.rmtree(model_directory)
 
-    classification_report_directory: Path = (
-        model_config.model_info_dir / "classification_reports"
-    )
+    classification_report_directory: Path = directory / "classification_reports"
     if classification_report_directory.exists():
         print(f"Cleaning {classification_report_directory}...")
         shutil.rmtree(classification_report_directory)
 
-    model_performance_csv: Path = model_config.model_info_dir / "model_performance.csv"
+    model_performance_csv: Path = directory / "model_performance.csv"
     if model_performance_csv.exists():
         model_performance_csv.unlink()
 
-    model_performance_plots: Path = (
-        model_config.model_info_dir / "baseline_model_performance.png"
-    )
+    model_performance_plots: Path = directory / "baseline_model_performance.png"
     if model_performance_plots.exists():
         model_performance_plots.unlink()
 
 
 def main(model_config: ModelConfig) -> None:
-    clean_dataset_directory(model_config)
+    clean_dataset_directory(model_config.model_info_dir)
 
     model_save_dir: Path = model_config.model_info_dir / "models"
     os.makedirs(model_save_dir, exist_ok=True)
