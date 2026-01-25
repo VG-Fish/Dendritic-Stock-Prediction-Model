@@ -159,13 +159,14 @@ def val_step(
     criterion: nn.Module,
     scheduler: ReduceLROnPlateau,
     epoch: int,
+    save_model_classification_report: bool = True,
 ) -> Tuple[float, float]:
     val_loss, val_accuracy = evaluate(
         model,
         val_loader,
         criterion,
         epoch,
-        save_model_classification_report=True,
+        save_model_classification_report=save_model_classification_report,
         desc=f"Num Val Batches Left for Epoch - {epoch}",
     )
 
@@ -417,7 +418,14 @@ def main(model_config: ModelConfig) -> None:
         )
         all_training_losses.append(losses)
 
-        loss, accuracy = val_step(model, data_loaders.val, criterion, scheduler, epoch)
+        loss, accuracy = val_step(
+            model,
+            data_loaders.val,
+            criterion,
+            scheduler,
+            epoch,
+            save_model_classification_report=True,
+        )
         all_val_losses.append(loss)
         all_accuracies.append(accuracy)
 
@@ -451,7 +459,7 @@ def main(model_config: ModelConfig) -> None:
     model.load_state_dict(torch.load(best_model_path))
 
     test_rmse, test_acc = evaluate(
-        model, data_loaders.test, criterion, desc="Testing model"
+        model, data_loaders.test, criterion, desc="Testing Model"
     )
 
     print(f"\nFinal Test Loss: {test_rmse:.5f}")
