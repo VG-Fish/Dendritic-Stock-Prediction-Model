@@ -32,8 +32,6 @@ from model import StockPredictionModel
 from parse_config import ModelConfig, get_config_from_json
 from stocks import NASDAQDataLoaders
 
-model_config: ModelConfig
-
 # ANSI escape codes
 RED: str = "\033[31m"
 GREEN: str = "\033[32m"
@@ -314,7 +312,7 @@ def plot_model_test_performance(
     plt.close()
 
 
-def clean_dataset_directory() -> None:
+def clean_dataset_directory(model_config: ModelConfig) -> None:
     debug_directory: Path = model_config.model_info_dir / "debug_predictions"
     if debug_directory.exists():
         print(f"Cleaning {debug_directory}...")
@@ -344,7 +342,7 @@ def clean_dataset_directory() -> None:
 
 
 def main(model_config: ModelConfig) -> None:
-    clean_dataset_directory()
+    clean_dataset_directory(model_config)
 
     model_save_dir: Path = model_config.model_info_dir / "models"
     os.makedirs(model_save_dir, exist_ok=True)
@@ -471,6 +469,7 @@ def main(model_config: ModelConfig) -> None:
 
 if __name__ == "__main__":
     model_config = get_config_from_json("lstm_model_config.json")  # pyright: ignore[reportAssignmentType]
-    torch.manual_seed(model_config.random_seed)
+    if model_config is not None:
+        torch.manual_seed(model_config.random_seed)
 
-    main(model_config)
+        main(model_config)
