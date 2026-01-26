@@ -371,7 +371,7 @@ def main(model_config: ModelConfig) -> None:
         model_config=model_config,
     ).to(device)
 
-    criterion: nn.MSELoss = nn.MSELoss().to(device)
+    criterion: nn.HuberLoss = nn.HuberLoss().to(device)
 
     optimizer: optim.AdamW = optim.AdamW(
         model.parameters(),
