@@ -58,16 +58,17 @@ def train_step(
 ) -> float:
     model.train()
     train_loss: float = 0
-    for X_train, y_train in tqdm(
+    for X_train, stock_id, y_train in tqdm(
         train_loader, desc=f"Num Train Batches left for Epoch - {epoch}"
     ):
         X_train = X_train.to(device)
+        stock_id = stock_id.to(device)
         y_train = y_train.to(device)
 
         with torch.autocast(
             device_type=device.type, dtype=torch.float16, cache_enabled=True
         ):
-            logits: torch.Tensor = model(X_train)
+            logits: torch.Tensor = model(X_train, stock_id)
             loss: torch.Tensor = criterion(logits, y_train)
 
         # Scale loss up so gradients don't vanish
@@ -106,14 +107,17 @@ def evaluate(
     all_predictions: List[NDArray] = []
 
     with torch.no_grad():
-        for X, y in tqdm(loader, desc=desc):
+        for X, stock_id, y in tqdm(loader, desc=desc):
             X = X.to(device)
+            stock_id = stock_id.to(device)
             y = y.to(device)
 
-            # Gemini suggested z-score stuff
-            logits: torch.Tensor = model(X)
+            with torch.autocast(
+                device_type=device.type, dtype=torch.float16, cache_enabled=True
+            ):
+                logits: torch.Tensor = model(X, stock_id)
 
-            batch_loss: torch.Tensor = criterion(logits, y)
+                batch_loss: torch.Tensor = criterion(logits, y)
             # Multiply by batch size to get total loss for the batch
             total_loss += batch_loss.item() * X.size(0)
 
@@ -138,12 +142,13 @@ def evaluate(
         target_names=["Down", "Up"],
         output_dict=True,
         digits=4,
+        zero_division=0.0,  # pyright: ignore[reportArgumentType]
     )
     classification_report_directory: Path = (
         model.config.model_info_dir / "classification_reports"
     )
     os.makedirs(classification_report_directory, exist_ok=True)
-    ending: str = f"_{epoch}" if epoch else ""
+    ending: str = f"_{epoch}" if epoch is not None else ""
     with open(
         classification_report_directory / f"report{ending}.json",
         "w",
@@ -189,7 +194,7 @@ def save_and_plot_model_performance(
         {
             "Training Loss": all_training_losses,
             "Val Loss": all_val_losses,
-            "Dimensional Accuracy": all_accuracies,
+            "Accuracy": all_accuracies,
         }
     )
     model_performance_df.write_csv(
@@ -243,11 +248,15 @@ def plot_model_test_performance(
     sampler = RandomSampler(test_dataset, replacement=False)  # pyright: ignore[reportArgumentType]
     dataloader = DataLoader(test_dataset, batch_size=2048, sampler=sampler)
 
-    X_sample, y_sample = next(iter(dataloader))
-    X_sample, y_sample = X_sample.to(device), y_sample.to(device)
+    X_sample, stock_id, y_sample = next(iter(dataloader))
+    X_sample, stock_id, y_sample = (
+        X_sample.to(device),
+        stock_id.to(device),
+        y_sample.to(device),
+    )
 
     with torch.no_grad():
-        logits = model(X_sample)
+        logits: torch.Tensor = model(X_sample, stock_id)
         # Convert logits to probabilities (0.0 to 1.0)
         probabilities: NDArray = torch.sigmoid(logits).cpu().numpy().flatten()
         targets: NDArray = y_sample.cpu().numpy().flatten()
@@ -284,14 +293,13 @@ def plot_model_test_performance(
         confusion_matrix=cm, display_labels=["Down", "Up"]
     )
     display.plot(cmap="Blues", ax=ax2, colorbar=True)
-    threshold: float = cm.max() / 2.0
 
     # Add labels to confusion matrix
     text_labels: List[Tuple[int, int, str]] = [
-        (0, 0, f"True Neg\n{cm[0, 0]}"),
-        (0, 1, f"False Neg\n{cm[0, 1]}"),
-        (1, 0, f"False Pos\n{cm[1, 0]}"),
-        (1, 1, f"True Pos\n{cm[1, 1]}"),
+        (0, 0, f"True Neg\n{cm[0, 0]:.4f}"),
+        (0, 1, f"False Neg\n{cm[0, 1]:.4f}"),
+        (1, 0, f"False Pos\n{cm[1, 0]:.4f}"),
+        (1, 1, f"True Pos\n{cm[1, 1]:.4f}"),
     ]
 
     # Clear existing text (optional, or just draw over it)
@@ -299,8 +307,9 @@ def plot_model_test_performance(
         text.set_text("")
 
     for x, y, label in text_labels:
-        color = "white" if cm[y, x] > threshold else "black"
-        ax2.text(x, y, label, ha="center", va="center", color=color, fontweight="bold")
+        ax2.text(
+            x, y, label, ha="center", va="center", color="black", fontweight="bold"
+        )
 
     ax2.set_title("Confusion Matrix (Normalized)")
     ax2.set_ylabel("True Label")
@@ -348,7 +357,7 @@ def main(model_config: ModelConfig) -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
-        dataset_creation_option=NASDAQDatasetCreationOptions.REUSE,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
         target=model_config.num_training_files,
     )
 
@@ -368,11 +377,12 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=256,
+        hidden_dim=64,
         num_layers=2,
         output_dim=1,
-        dropout=0.3,
+        dropout=0.2,
         target_feature_idx=target_idx,
+        embedding_dim=16,
         device=device,
         model_config=model_config,
     ).to(device)
@@ -382,6 +392,7 @@ def main(model_config: ModelConfig) -> None:
     negative_count: int = counts["count"][0]
     positive_count: int = counts["count"][1]
     weight_value: float = negative_count / positive_count
+    print(f"Passing positive weight of {weight_value:.3f} to BCEWithLogitsLoss().")
     positive_weight: torch.Tensor = torch.tensor([weight_value]).to(device)
     criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss(
         pos_weight=positive_weight

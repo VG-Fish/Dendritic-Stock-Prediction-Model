@@ -15,10 +15,16 @@ class StockPredictionModel(nn.Module):
         output_dim: int,
         dropout: float,
         target_feature_idx: int,
+        embedding_dim: int,
         device: torch.device,
         model_config: ModelConfig,
     ) -> None:
         super().__init__()
+
+        # This is a stock embedding that maps stock_id to embedding_dim vector
+        self.stock_emb: nn.Embedding = nn.Embedding(
+            num_embeddings=model_config.num_training_files, embedding_dim=embedding_dim
+        )
 
         self.num_layers: int = num_layers
         self.hidden_dim: int = hidden_dim
@@ -28,7 +34,7 @@ class StockPredictionModel(nn.Module):
         self.config: ModelConfig = model_config
 
         self.lstm: nn.LSTM = nn.LSTM(
-            input_dim,
+            input_dim + embedding_dim,
             hidden_dim,
             num_layers,
             batch_first=True,
@@ -42,10 +48,9 @@ class StockPredictionModel(nn.Module):
         # scales everything to around the same scale level (I think).
         # This layer stabilizes/speeds up training by preventing vanishing/exploding gradients
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(hidden_dim, device=device)
-        self.batch_norm: nn.BatchNorm1d = nn.BatchNorm1d(input_dim, device=device)
 
         # High dropout as financial data is noisy
-        self.dropout: nn.Dropout = nn.Dropout(0.5).to(device)
+        self.dropout: nn.Dropout = nn.Dropout(0.2).to(device)
 
         # Projection Head
         self.fc: nn.Sequential = nn.Sequential(
@@ -55,13 +60,17 @@ class StockPredictionModel(nn.Module):
             nn.Linear(hidden_dim // 2, output_dim, device=device),
         )
 
-    def forward(self: Self, x: torch.Tensor) -> torch.Tensor:
-        # Training data shape = (Batch Size, Sequence Length, Features)
-        # PyTorch expects (Batch Size, Features, Sequence Length)
-        x = x.permute(0, 2, 1)
-        x = self.batch_norm(x)
-        x = x.permute(0, 2, 1)
+    def forward(self: Self, x: torch.Tensor, stock_id: int) -> torch.Tensor:
+        batch_size, sequence_length, _ = x.shape
+        embedding: torch.Tensor = self.stock_emb(stock_id)
+        embedding_expanded: torch.Tensor = embedding.unsqueeze(1).expand(
+            batch_size, sequence_length, -1
+        )
 
+        # Add embedding to feature dimension
+        x = torch.cat([x, embedding_expanded], dim=-1)
+
+        # Training data shape = (Batch Size, Sequence Length, Features)
         out, _ = self.lstm(x)
 
         # Take the last time step, which is the standard for many-to-one tasks, because the last step should

@@ -1,12 +1,12 @@
 {
   "random_seed": 1290,
   "sequence_length": 60,
-  "train_fraction": 0.8,
-  "val_fraction": 0.1,
-  "batch_size": 256,
+  "train_fraction": 0.7,
+  "val_fraction": 0.2,
+  "batch_size": 128,
   "learning_rate": 0.001,
-  "epochs": 300,
+  "epochs": 100,
   "early_stopping_patience": 25,
-  "num_training_files": 3200,
+  "num_training_files": 1,
   "model_info_dir": "lstm_model_info"
 }

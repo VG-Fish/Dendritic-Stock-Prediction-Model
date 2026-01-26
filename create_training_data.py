@@ -174,11 +174,11 @@ class TrainingDataCreator:
             .agg(
                 pl.col("Target").last(),
                 pl.col("Date").last(),
-                pl.col("RSI").slice(0, self.model_config.sequence_length),
-                pl.col("MACD").slice(0, self.model_config.sequence_length),
-                pl.col("MACD Signal").slice(0, self.model_config.sequence_length),
-                pl.col("SMA Ratio").slice(0, self.model_config.sequence_length),
-                pl.col("Rolling STD").slice(0, self.model_config.sequence_length),
+                pl.col("RSI"),
+                pl.col("MACD"),
+                pl.col("MACD Signal"),
+                pl.col("SMA Ratio"),
+                pl.col("Rolling STD"),
                 pl.col("Log Return")
                 .slice(0, self.model_config.sequence_length)
                 .alias("Close"),
@@ -191,8 +191,9 @@ class TrainingDataCreator:
                 pl.col("Log Range")
                 .slice(0, self.model_config.sequence_length)
                 .alias("Range"),
-                # This code forms the basis of adding embeddings
-                # pl.col("Path").cast(pl.Categorical).to_physical().alias("Stock ID"),
+            )
+            .with_columns(
+                pl.col("Path").cast(pl.Categorical).to_physical().alias("Stock ID")
             )
             .drop("Path", "Index")
             .drop_nulls()
@@ -243,6 +244,7 @@ class TrainingDataCreator:
             NASDAQDataset(df),
             batch_size=self.model_config.batch_size,
             num_workers=1,
+            persistent_workers=True,
         )
 
     def _create_dataloaders(
