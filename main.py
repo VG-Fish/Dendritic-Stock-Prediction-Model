@@ -1,8 +1,8 @@
-import json
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -10,12 +10,9 @@ import polars as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from matplotlib.axes import Axes
 from numpy.typing import NDArray
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    classification_report,
-    confusion_matrix,
-)
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import Dataset, RandomSampler
 from torch.utils.data.dataloader import DataLoader
@@ -47,6 +44,14 @@ elif torch.mps.is_available():
 matplotlib.use("Agg")
 
 
+@dataclass
+class CalculatedValMetrics:
+    avg_loss: float
+    rsme: float
+    mae: float
+    r2: float
+
+
 def train_step(
     model: StockPredictionModel,
     train_loader: DataLoader,
@@ -57,6 +62,7 @@ def train_step(
     epoch: int,
 ) -> float:
     model.train()
+
     train_loss: float = 0
     for X_train, stock_id, y_train in tqdm(
         train_loader, desc=f"Num Train Batches left for Epoch - {epoch}"
@@ -68,8 +74,8 @@ def train_step(
         with torch.autocast(
             device_type=device.type, dtype=torch.float16, cache_enabled=True
         ):
-            logits: torch.Tensor = model(X_train, stock_id)
-            loss: torch.Tensor = criterion(logits, y_train)
+            predictions: torch.Tensor = model(X_train, stock_id)
+            loss: torch.Tensor = criterion(predictions, y_train)
 
         # Scale loss up so gradients don't vanish
         scaler.scale(loss).backward()
@@ -93,13 +99,10 @@ def evaluate(
     model: StockPredictionModel,
     loader: DataLoader,
     criterion: nn.Module,
-    epoch: Optional[int] = None,
-    save_model_classification_report: bool = True,
     desc: str = "Evaluating",
-) -> Tuple[float, float]:
+) -> CalculatedValMetrics:
     model.eval()
 
-    correct: int = 0
     total_samples: int = 0
     total_loss: float = 0.0
 
@@ -112,50 +115,24 @@ def evaluate(
             stock_id = stock_id.to(device)
             y = y.to(device)
 
-            with torch.autocast(
-                device_type=device.type, dtype=torch.float16, cache_enabled=True
-            ):
-                logits: torch.Tensor = model(X, stock_id)
+            predictions: torch.Tensor = model(X, stock_id)
 
-                batch_loss: torch.Tensor = criterion(logits, y)
+            batch_loss: torch.Tensor = criterion(predictions, y)
             # Multiply by batch size to get total loss for the batch
             total_loss += batch_loss.item() * X.size(0)
-
-            probabilities: torch.Tensor = torch.sigmoid(logits)
-            # If prob > 0.5, predict 1 (Up), else 0 (Down)
-            predictions: torch.Tensor = (probabilities > 0.5).float()
-            correct += (predictions == y).sum().item()
-            total_samples += y.size(0)
+            total_samples += X.size(0)
 
             all_targets.extend(y.cpu().numpy())
             all_predictions.extend(predictions.cpu().numpy())
 
     avg_loss: float = total_loss / total_samples
-    accuracy: float = correct / total_samples
 
-    if not save_model_classification_report:
-        return avg_loss, accuracy
+    # Regression metrics
+    rsme: float = root_mean_squared_error(all_targets, all_predictions)
+    mae: float = mean_absolute_error(all_targets, all_predictions)
+    r2: float = r2_score(all_targets, all_predictions)
 
-    report: Dict = classification_report(  # pyright: ignore[reportAssignmentType]
-        all_targets,
-        all_predictions,
-        target_names=["Down", "Up"],
-        output_dict=True,
-        digits=4,
-        zero_division=0.0,  # pyright: ignore[reportArgumentType]
-    )
-    classification_report_directory: Path = (
-        model.config.model_info_dir / "classification_reports"
-    )
-    os.makedirs(classification_report_directory, exist_ok=True)
-    ending: str = f"_{epoch}" if epoch is not None else ""
-    with open(
-        classification_report_directory / f"report{ending}.json",
-        "w",
-    ) as f:
-        json.dump(report, f, indent=2)
-
-    return avg_loss, accuracy
+    return CalculatedValMetrics(avg_loss, rsme, mae, r2)
 
 
 def val_step(
@@ -164,37 +141,40 @@ def val_step(
     criterion: nn.Module,
     scheduler: ReduceLROnPlateau,
     epoch: int,
-    save_model_classification_report: bool = True,
-) -> Tuple[float, float]:
-    val_loss, val_accuracy = evaluate(
+) -> CalculatedValMetrics:
+    metrics: CalculatedValMetrics = evaluate(
         model,
         val_loader,
         criterion,
-        epoch,
-        save_model_classification_report=save_model_classification_report,
         desc=f"Num Val Batches Left for Epoch - {epoch}",
     )
 
-    print(f"\nCurrent Accuracy: {val_accuracy:.3%}")
-    print(f"Current Val Loss: {val_loss}")
+    print(f"\nCurrent Val MAE: {metrics.mae:.6f}")
+    print(f"Current Val R2: {metrics.r2:.4f}")
+    print(f"Current Val Loss: {metrics.avg_loss:.6f}")
 
-    scheduler.step(val_loss)
+    scheduler.step(metrics.avg_loss)
 
-    return val_loss, val_accuracy
+    return metrics
 
 
+# Gemini coded plotting
 def save_and_plot_model_performance(
     model_config: ModelConfig,
     all_training_losses: List[float],
-    all_val_losses: List[float],
-    all_accuracies: List[float],
+    all_val_metrics: List[CalculatedValMetrics],
 ) -> None:
     print("Saving model performance to CSV...")
+
+    val_losses: List[float] = [m.avg_loss for m in all_val_metrics]
+    val_maes: List[float] = [m.mae for m in all_val_metrics]
+    val_r2s: List[float] = [m.r2 for m in all_val_metrics]
     model_performance_df: pl.DataFrame = pl.DataFrame(
         {
             "Training Loss": all_training_losses,
-            "Val Loss": all_val_losses,
-            "Accuracy": all_accuracies,
+            "Val Loss": val_losses,
+            "Val MAE": val_maes,
+            "Val R2": val_r2s,
         }
     )
     model_performance_df.write_csv(
@@ -204,33 +184,33 @@ def save_and_plot_model_performance(
     print("Saving model performance to graphs...")
     fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
 
-    color = "tab:blue"
+    color: str = "tab:blue"
     ax1.set_xlabel("Epochs")
     ax1.set_ylabel("Training Loss", color=color)
-    l1 = ax1.plot(all_training_losses, color=color, label="Train Loss")
+    l1: List = ax1.plot(all_training_losses, color=color, label="Train Loss")
     ax1.tick_params(axis="y", labelcolor=color)
 
-    ax2 = ax1.twinx()
+    ax2: Axes = ax1.twinx()
     color = "tab:red"
     ax2.set_ylabel("Val Loss", color=color)
-    l2 = ax2.plot(all_val_losses, color=color, label="Val Loss")
+    l2: List = ax2.plot(val_losses, color=color, label="Val Loss")
     ax2.tick_params(axis="y", labelcolor=color)
 
     ax1.set_title("Loss and Error Over Epochs")
 
     # Combining legends
-    lines = l1 + l2
-    labs = [line.get_label() for line in lines]
+    lines: List = l1 + l2
+    labs: List = [line.get_label() for line in lines]
     ax1.legend(lines, labs, loc="upper right")
 
-    ax3.plot(all_accuracies, color="tab:green", label="Accuracy")
+    ax3.plot(val_r2s, color="tab:green", label="R² Score")
     ax3.axhline(
-        y=0.50, color="black", linestyle="--", alpha=0.5, label="Random Guess (50%)"
+        y=0.0, color="black", linestyle="--", alpha=0.5, label="Mean Baseline (0.0)"
     )
     ax3.set_xlabel("Epochs")
-    ax3.set_ylabel("Accuracy (%)")
-    ax3.set_title("Model Accuracy")
-    ax3.legend(loc="upper right")
+    ax3.set_ylabel("R² Score")
+    ax3.set_title("Model Fit (R² Score)")
+    ax3.legend(loc="upper left")
 
     fig.tight_layout()
     plt.savefig(model_config.model_info_dir / "baseline_model_performance.png")
@@ -245,78 +225,64 @@ def plot_model_test_performance(
 ) -> None:
     model.eval()
 
-    sampler = RandomSampler(test_dataset, replacement=False)  # pyright: ignore[reportArgumentType]
-    dataloader = DataLoader(test_dataset, batch_size=2048, sampler=sampler)
+    sampler: RandomSampler = RandomSampler(test_dataset, replacement=False)  # pyright: ignore[reportArgumentType]
+    dataloader: DataLoader = DataLoader(test_dataset, batch_size=2048, sampler=sampler)
 
     X_sample, stock_id, y_sample = next(iter(dataloader))
-    X_sample, stock_id, y_sample = (
-        X_sample.to(device),
-        stock_id.to(device),
-        y_sample.to(device),
-    )
+    X_sample = X_sample.to(device)
+    stock_id = stock_id.to(device)
+    y_sample = y_sample.to(device).float()
 
     with torch.no_grad():
-        logits: torch.Tensor = model(X_sample, stock_id)
-        # Convert logits to probabilities (0.0 to 1.0)
-        probabilities: NDArray = torch.sigmoid(logits).cpu().numpy().flatten()
+        predictions: NDArray = model(X_sample, stock_id).cpu().numpy().flatten()
         targets: NDArray = y_sample.cpu().numpy().flatten()
-        predictions: NDArray = (probabilities > 0.5).astype(float)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    fig, ax1 = plt.subplots(1, 1, figsize=(10, 8))
 
-    # Green (up) bars should ideally be clustered tightly on the right.
-    # Red (down) bars clustered tightly on the left
-    ax1.hist(
-        probabilities[targets == 1],
-        bins=50,
-        alpha=0.6,
-        color="green",
-        label="Actual: UP",
-        range=(0, 1),
+    num_samples_to_plot: int = 100
+    subset_targets: NDArray = targets[:num_samples_to_plot]
+    subset_predictions: NDArray = predictions[:num_samples_to_plot]
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    ax.plot(
+        subset_targets,
+        label="Actual Target",
+        marker="o",
+        linestyle="-",
+        color="tab:blue",
+        alpha=0.7,
     )
-    ax1.hist(
-        probabilities[targets == 0],
-        bins=50,
-        alpha=0.6,
-        color="red",
-        label="Actual: DOWN",
-        range=(0, 1),
+
+    ax.plot(
+        subset_predictions,
+        label="Model Prediction",
+        marker="x",
+        linestyle="--",
+        color="tab:red",
+        alpha=0.9,
     )
-    ax1.axvline(0.5, color="black", linestyle="--", alpha=0.3, label="Threshold")
-    ax1.set_title(f"Prediction Confidence Distribution (Epoch {epoch})")
-    ax1.set_xlabel("Predicted Probability (0=Down, 1=Up)")
-    ax1.set_ylabel("Count")
-    ax1.legend()
 
-    cm: NDArray = confusion_matrix(targets, predictions, normalize="all")
-    display: ConfusionMatrixDisplay = ConfusionMatrixDisplay(
-        confusion_matrix=cm, display_labels=["Down", "Up"]
-    )
-    display.plot(cmap="Blues", ax=ax2, colorbar=True)
-
-    # Add labels to confusion matrix
-    text_labels: List[Tuple[int, int, str]] = [
-        (0, 0, f"True Neg\n{cm[0, 0]:.4f}"),
-        (0, 1, f"False Neg\n{cm[0, 1]:.4f}"),
-        (1, 0, f"False Pos\n{cm[1, 0]:.4f}"),
-        (1, 1, f"True Pos\n{cm[1, 1]:.4f}"),
-    ]
-
-    # Clear existing text (optional, or just draw over it)
-    for text in display.text_.ravel():  # pyright: ignore[reportOptionalMemberAccess]
-        text.set_text("")
-
-    for x, y, label in text_labels:
-        ax2.text(
-            x, y, label, ha="center", va="center", color="black", fontweight="bold"
+    for i in range(num_samples_to_plot):
+        ax.vlines(
+            x=i,
+            ymin=min(subset_targets[i], subset_predictions[i]),
+            ymax=max(subset_targets[i], subset_predictions[i]),
+            colors="gray",
+            linestyles=":",
+            alpha=0.3,
         )
 
-    ax2.set_title("Confusion Matrix (Normalized)")
-    ax2.set_ylabel("True Label")
-    ax2.set_xlabel("Predicted Label")
+    ax.set_title(
+        f"Actual vs Predicted Comparison (Epoch {epoch}) - First {num_samples_to_plot} Random Samples"
+    )
+    ax.set_xlabel("Sample Index")
+    ax.set_ylabel("Stock Value")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    debug_directory = model.config.model_info_dir / "debug_predictions"
+    debug_directory: Path = model.config.model_info_dir / "debug_predictions"
     os.makedirs(debug_directory, exist_ok=True)
     plt.savefig(debug_directory / f"epoch_{epoch}.png")
     plt.close()
@@ -332,11 +298,6 @@ def clean_dataset_directory(directory: Path) -> None:
     if model_directory.exists():
         print(f"Cleaning {model_directory}...")
         shutil.rmtree(model_directory)
-
-    classification_report_directory: Path = directory / "classification_reports"
-    if classification_report_directory.exists():
-        print(f"Cleaning {classification_report_directory}...")
-        shutil.rmtree(classification_report_directory)
 
     model_performance_csv: Path = directory / "model_performance.csv"
     if model_performance_csv.exists():
@@ -357,7 +318,7 @@ def main(model_config: ModelConfig) -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
-        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REUSE,
         target=model_config.num_training_files,
     )
 
@@ -365,7 +326,7 @@ def main(model_config: ModelConfig) -> None:
     data_loaders: NASDAQDataLoaders = training_data_creator.create_data_loaders_from(
         info.stocks_directory,
         model_config.model_info_dir,
-        dataset_loading_config=DatasetLoadingConfig.REPLACE,
+        dataset_loading_config=DatasetLoadingConfig.REUSE,
     )
 
     # Get 'Close' column dynamically
@@ -387,16 +348,7 @@ def main(model_config: ModelConfig) -> None:
         model_config=model_config,
     ).to(device)
 
-    # This helps the model adjust to class imbalance in the dataset dynamically
-    counts: pl.DataFrame = training_data_creator.counts.sort("Target")
-    negative_count: int = counts["count"][0]
-    positive_count: int = counts["count"][1]
-    weight_value: float = negative_count / positive_count
-    print(f"Passing positive weight of {weight_value:.3f} to BCEWithLogitsLoss().")
-    positive_weight: torch.Tensor = torch.tensor([weight_value]).to(device)
-    criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss(
-        pos_weight=positive_weight
-    ).to(device)
+    criterion: nn.MSELoss = nn.MSELoss().to(device)
 
     optimizer: optim.AdamW = optim.AdamW(
         model.parameters(),
@@ -413,8 +365,7 @@ def main(model_config: ModelConfig) -> None:
     scaler: torch.GradScaler = torch.GradScaler(device=device.type)
 
     all_training_losses: List[float] = []
-    all_val_losses: List[float] = []
-    all_accuracies: List[float] = []
+    all_val_metrics: List[CalculatedValMetrics] = []
 
     best_loss: float = float("inf")
     counter: int = 0
@@ -429,19 +380,17 @@ def main(model_config: ModelConfig) -> None:
         )
         all_training_losses.append(losses)
 
-        loss, accuracy = val_step(
+        val_metrics: CalculatedValMetrics = val_step(
             model,
             data_loaders.val,
             criterion,
             scheduler,
             epoch,
-            save_model_classification_report=True,
         )
-        all_val_losses.append(loss)
-        all_accuracies.append(accuracy)
+        all_val_metrics.append(val_metrics)
 
-        if loss < best_loss:
-            best_loss = loss
+        if val_metrics.avg_loss < best_loss:
+            best_loss = val_metrics.avg_loss
             counter = 0
             torch.save(model.state_dict(), model_save_dir / "best_model.pt")
         else:
@@ -454,7 +403,7 @@ def main(model_config: ModelConfig) -> None:
         torch.save(model.state_dict(), model_save_dir / f"model_{epoch}.pt")
 
         save_and_plot_model_performance(
-            model.config, all_training_losses, all_val_losses, all_accuracies
+            model.config, all_training_losses, all_val_metrics
         )
 
         plot_model_test_performance(model, data_loaders.test.dataset, epoch)
@@ -469,17 +418,19 @@ def main(model_config: ModelConfig) -> None:
     print(f"Loading best model from: {best_model_path}")
     model.load_state_dict(torch.load(best_model_path))
 
-    test_rmse, test_acc = evaluate(
+    test_metrics: CalculatedValMetrics = evaluate(
         model, data_loaders.test, criterion, desc="Testing Model"
     )
 
-    print(f"\nFinal Test Loss: {test_rmse:.5f}")
-    print(f"Final Test Accuracy: {test_acc:.3%}")
+    print(f"\nFinal Test Loss: {test_metrics.avg_loss:.5f}")
+    print(f"Final Test MAE: {test_metrics.mae:.5f}")
+    print(f"Final Test R2: {test_metrics.r2:.4f}")
 
-    if test_acc > 0.5:
-        print(f"{GREEN}SUCCESS: The model beats random guessing!{RESET}")
+    # For r2 metric, 0.0 means guessing the mean, 1.0 means a perfect model
+    if test_metrics.r2 > 0.0:
+        print(f"{GREEN}SUCCESS: The model beats the baseline mean prediction!{RESET}")
     else:
-        print(f"{RED}FAILURE: The model failed to generalize.{RESET}")
+        print(f"{RED}FAILURE: The model failed to generalize (R2 <= 0).{RESET}")
 
 
 if __name__ == "__main__":

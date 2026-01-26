@@ -7,6 +7,6 @@
   "learning_rate": 0.001,
   "epochs": 100,
   "early_stopping_patience": 25,
-  "num_training_files": 1,
+  "num_training_files": 50,
   "model_info_dir": "lstm_model_info"
 }

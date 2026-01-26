@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import IntEnum
 from pathlib import Path
-from typing import Dict, List, Optional, Self
+from typing import Dict, List, Self
 
 import polars as pl
 from torch.utils.data.dataloader import DataLoader
@@ -61,7 +61,6 @@ class DatasetLoadingConfig(IntEnum):
 class TrainingDataCreator:
     def __init__(self: Self, model_config: ModelConfig) -> None:
         self.model_config: ModelConfig = model_config
-        self._counts: Optional[pl.DataFrame] = None
 
     # Gemini suggestion to improve dimensional accuracy
     # RSI calculates if the stock was overbought
@@ -140,16 +139,7 @@ class TrainingDataCreator:
                     .over("Path")
                     .alias("Rolling STD"),
                     # Shift Log Return to the left to see tomorrow's return today
-                    pl.col("Log Return").shift(-1).over("Path").alias("Next Return"),
-                )
-                .with_columns(
-                    pl.when(pl.col("Next Return") > 0.001)
-                    .then(1.0)
-                    .when(pl.col("Next Return") < -0.001)
-                    .then(0.0)
-                    .otherwise(None)
-                    .cast(pl.Float32)
-                    .alias("Target")
+                    pl.col("Log Return").shift(-1).over("Path").alias("Target"),
                 )
                 .with_columns(
                     pl.all().exclude("Path", "Date", "Index").cast(pl.Float32)
@@ -198,8 +188,6 @@ class TrainingDataCreator:
             .drop("Path", "Index")
             .drop_nulls()
         )
-
-        self._counts = df["Target"].value_counts()
 
         date_cutoffs: pl.DataFrame = df.select(
             pl.col("Date")
@@ -299,7 +287,12 @@ class TrainingDataCreator:
             val_df: pl.DataFrame = pl.read_parquet(dataset_directory / "val.parquet")
             test_df: pl.DataFrame = pl.read_parquet(dataset_directory / "test.parquet")
 
-            self._counts = train_df["Target"].value_counts()
+            if train_df.is_empty() or val_df.is_empty() or test_df.is_empty():
+                raise ValueError(
+                    f"{RED}Cannot create datasets as some of the datasets are empty. "
+                    "Try recreating the dataset by running 'self.download_dataset()' with "
+                    f"dataset_loading_config=NASDAQDatasetCreationOptions.REPLACE{RESET}"
+                )
 
             return self._create_dataloaders(train_df, val_df, test_df)
 
@@ -316,12 +309,3 @@ class TrainingDataCreator:
         test_df.write_parquet(dataset_directory / "test.parquet")
 
         return self._create_dataloaders(train_df, val_df, test_df)
-
-    @property
-    def counts(self: Self) -> pl.DataFrame:
-        if self._counts is None:
-            raise ValueError(
-                f"{RED}'self.counts' doesn't exist! Call 'self.create_data_loaders_from()' "
-                f"to regenerate 'self.counts'.{RESET}"
-            )
-        return self._counts
