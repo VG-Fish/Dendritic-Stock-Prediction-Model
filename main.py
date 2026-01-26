@@ -50,6 +50,7 @@ class CalculatedValMetrics:
     rmse: float
     mae: float
     r2: float
+    dimensional_accuracy: float
 
 
 def train_step(
@@ -77,6 +78,8 @@ def train_step(
             predictions: torch.Tensor = model(X_train, stock_id)
             loss: torch.Tensor = criterion(predictions, y_train)
 
+        optimizer.zero_grad()
+
         # Scale loss up so gradients don't vanish
         scaler.scale(loss).backward()
         # Must unscale before clipping gradients
@@ -87,7 +90,6 @@ def train_step(
         scaler.update()
 
         train_loss += loss.item()
-        optimizer.zero_grad()
 
     epoch_loss: float = train_loss / len(train_loader)
     print(f"\nCurrent Training Loss: {epoch_loss}")
@@ -103,8 +105,10 @@ def evaluate(
 ) -> CalculatedValMetrics:
     model.eval()
 
+    correct_signs: int = 0
     total_samples: int = 0
     total_loss: float = 0.0
+    dimensional_accuracy: float = 0.0
 
     all_targets: List[NDArray] = []
     all_predictions: List[NDArray] = []
@@ -125,14 +129,18 @@ def evaluate(
             all_targets.extend(y.cpu().numpy())
             all_predictions.extend(predictions.cpu().numpy())
 
+            correct = (predictions.sign() == y.sign()).sum().item()
+            correct_signs += correct
+
     avg_loss: float = total_loss / total_samples
+    dimensional_accuracy = correct_signs / total_samples
 
     # Regression metrics
     rsme: float = root_mean_squared_error(all_targets, all_predictions)
     mae: float = mean_absolute_error(all_targets, all_predictions)
     r2: float = r2_score(all_targets, all_predictions)
 
-    return CalculatedValMetrics(avg_loss, rsme, mae, r2)
+    return CalculatedValMetrics(avg_loss, rsme, mae, r2, dimensional_accuracy)
 
 
 def val_step(
@@ -152,6 +160,9 @@ def val_step(
     print(f"\nCurrent Val MAE: {metrics.mae:.6f}")
     print(f"Current Val R2: {metrics.r2:.4f}")
     print(f"Current Val Loss: {metrics.avg_loss:.6f}")
+    print(
+        f"Current Val Dimensional Accuracy: {metrics.dimensional_accuracy * 100:.4f}%"
+    )
 
     scheduler.step(metrics.avg_loss)
 
@@ -169,12 +180,16 @@ def save_and_plot_model_performance(
     val_losses: List[float] = [m.avg_loss for m in all_val_metrics]
     val_maes: List[float] = [m.mae for m in all_val_metrics]
     val_r2s: List[float] = [m.r2 for m in all_val_metrics]
+    val_dimensional_accuracies: List[float] = [
+        m.dimensional_accuracy for m in all_val_metrics
+    ]
     model_performance_df: pl.DataFrame = pl.DataFrame(
         {
             "Training Loss": all_training_losses,
             "Val Loss": val_losses,
             "Val MAE": val_maes,
             "Val R2": val_r2s,
+            "Val Dimensional Accuracy": val_dimensional_accuracies,
         }
     )
     model_performance_df.write_csv(
@@ -182,7 +197,7 @@ def save_and_plot_model_performance(
     )
 
     print("Saving model performance to graphs...")
-    fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(10, 10), sharex=True)
+    fig, (ax1, ax3, ax4) = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
 
     color: str = "tab:blue"
     ax1.set_xlabel("Epochs")
@@ -210,7 +225,15 @@ def save_and_plot_model_performance(
     ax3.set_xlabel("Epochs")
     ax3.set_ylabel("R² Score")
     ax3.set_title("Model Fit (R² Score)")
+    ax3.set_ylim(-1.0, 1.0)
     ax3.legend(loc="upper left")
+
+    ax4.plot(val_dimensional_accuracies, color="tab:orange", label="Dimension Accuracy")
+    ax4.axhline(y=0.5, color="black", linestyle="--", alpha=0.5, label="Random Guess")
+    ax4.set_xlabel("Epochs")
+    ax4.set_ylabel("Dimensional Accuracy")
+    ax4.set_title("Model Dimensional Accuracy")
+    ax4.legend(loc="upper right")
 
     fig.tight_layout()
     plt.savefig(model_config.model_info_dir / "baseline_model_performance.png")
@@ -338,12 +361,12 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=256,
+        hidden_dim=384,
         num_layers=2,
         output_dim=1,
-        dropout=0.25,
+        dropout=0.3,
         target_feature_idx=target_idx,
-        embedding_dim=64,
+        embedding_dim=96,
         device=device,
         model_config=model_config,
     ).to(device)
@@ -359,8 +382,9 @@ def main(model_config: ModelConfig) -> None:
     scheduler: ReduceLROnPlateau = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="min",
-        factor=0.5,
-        patience=10,
+        factor=0.7,
+        patience=15,
+        min_lr=1e-5,
     )
     scaler: torch.GradScaler = torch.GradScaler(device=device.type)
 
