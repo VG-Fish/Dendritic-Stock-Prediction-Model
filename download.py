@@ -96,6 +96,11 @@ class NASDAQDownloader:
             .sample(fraction=1, shuffle=True, seed=model_config.random_seed)
         )
 
+        self._stock_id_map: pl.DataFrame = self.data.with_columns(
+            self.data["Symbol"],
+            self.data["Symbol"].cast(pl.Categorical).to_physical().alias("Stock ID"),
+        ).select("Symbol", "Stock ID")
+
         self.symbol_data: pl.DataFrame = self.data.select("Symbol", "ETF").unique(
             subset=["Symbol"], keep="first"
         )
@@ -273,3 +278,7 @@ class NASDAQDownloader:
         )
 
         return dataset_info
+
+    @property
+    def stock_id_map(self: Self) -> pl.DataFrame:
+        return self._stock_id_map

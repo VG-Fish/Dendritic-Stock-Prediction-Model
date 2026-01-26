@@ -1,11 +1,12 @@
 import shutil
 from dataclasses import dataclass
-from datetime import date, timedelta
 from enum import IntEnum
 from pathlib import Path
-from typing import Dict, List, Self
+from typing import Dict, List, Self, Set
 
+import numpy as np
 import polars as pl
+from numpy.random import Generator
 from torch.utils.data.dataloader import DataLoader
 
 from parse_config import ModelConfig
@@ -59,8 +60,11 @@ class DatasetLoadingConfig(IntEnum):
 
 
 class TrainingDataCreator:
-    def __init__(self: Self, model_config: ModelConfig) -> None:
+    def __init__(
+        self: Self, model_config: ModelConfig, stock_id_map: pl.DataFrame
+    ) -> None:
         self.model_config: ModelConfig = model_config
+        self.stock_id_map: pl.DataFrame = stock_id_map
 
     # Gemini suggestion to improve dimensional accuracy
     # RSI calculates if the stock was overbought
@@ -77,6 +81,9 @@ class TrainingDataCreator:
         return rsi.fill_nan(50)
 
     def _create_datasets_from(self: Self, directory: Path) -> SplitDFDatasets:
+        def sanitize(symbol: str) -> str:
+            return symbol.replace("/", "-").replace("^", "-")
+
         print(f"Scanning for CSVs in {directory}...")
 
         glob: List = list(directory.glob("*.csv"))
@@ -89,6 +96,15 @@ class TrainingDataCreator:
             "Close": pl.Float64,
             "Volume": pl.Float64,
         }
+
+        self.stock_id_map = self.stock_id_map.with_columns(
+            pl.col("Symbol")
+            .map_elements(
+                lambda s: str(directory / f"{sanitize(s)}.csv"),
+                return_dtype=pl.String,
+            )
+            .alias("Path")
+        ).select("Path", "Stock ID")
 
         df: pl.DataFrame = (
             (
@@ -154,6 +170,31 @@ class TrainingDataCreator:
                 )
             )
             .collect()
+            # This with statement normalizes the data for each feature column
+            .with_columns(
+                [
+                    (
+                        (pl.col(c) - pl.col(c).mean().over("Path"))
+                        / pl.col(c).std().over("Path")
+                    ).alias(c)
+                    for c in [
+                        "Log Return",
+                        "Log Overnight",
+                        "Log Volume Change",
+                        "Log Range",
+                        "RSI",
+                        "MACD",
+                        "MACD Signal",
+                        "SMA Ratio",
+                        "Rolling STD",
+                    ]
+                ]
+            )
+            .join(
+                self.stock_id_map,
+                on="Path",
+                how="inner",
+            )
             .sort(["Path", "Index"])
             .rolling(
                 index_column="Index",
@@ -164,6 +205,7 @@ class TrainingDataCreator:
             .agg(
                 pl.col("Target").last(),
                 pl.col("Date").last(),
+                pl.col("Stock ID").last(),
                 pl.col("RSI"),
                 pl.col("MACD"),
                 pl.col("MACD Signal"),
@@ -182,47 +224,35 @@ class TrainingDataCreator:
                 .slice(0, self.model_config.sequence_length)
                 .alias("Range"),
             )
-            .with_columns(
-                pl.col("Path").cast(pl.Categorical).to_physical().alias("Stock ID")
-            )
-            .drop("Path", "Index")
+            .drop("Path", "Index", "Date")
             .drop_nulls()
         )
 
-        date_cutoffs: pl.DataFrame = df.select(
-            pl.col("Date")
-            .quantile(self.model_config.train_fraction, interpolation="nearest")
-            .alias("Train Cutoff"),
-            pl.col("Date")
-            .quantile(
-                self.model_config.train_fraction + self.model_config.val_fraction,
-                interpolation="nearest",
-            )
-            .alias("Val Cutoff"),
+        # Goal is to train on one subset of stocks and validate on another subset of stocks
+        unique_stocks: List[int] = df.select("Stock ID").unique().to_series().to_list()
+        rng: Generator = np.random.default_rng(self.model_config.random_seed)
+        rng.shuffle(unique_stocks)
+
+        num_stocks: int = len(unique_stocks)
+        train_cut: int = int(num_stocks * self.model_config.train_fraction)
+        val_cut: int = int(
+            num_stocks
+            * (self.model_config.train_fraction + self.model_config.val_fraction)
         )
-        train_date_cutoff: date = date_cutoffs["Train Cutoff"].dt.date().item()
-        val_date_cutoff: date = date_cutoffs["Val Cutoff"].dt.date().item()
 
-        # We minus by timedelta to remove the shared data between train and val datasets that came as a result of using .rolling()
-        train_df: pl.DataFrame = df.filter(
-            pl.col("Date")
-            < train_date_cutoff - timedelta(days=self.model_config.sequence_length)
-        ).drop("Date")
+        train_stocks: Set[int] = set(unique_stocks[:train_cut])
+        val_stocks: Set[int] = set(unique_stocks[train_cut:val_cut])
+        test_stocks: Set[int] = set(unique_stocks[val_cut:])
 
-        val_df: pl.DataFrame = df.filter(
-            (pl.col("Date") >= train_date_cutoff)
-            & (
-                pl.col("Date")
-                < val_date_cutoff - timedelta(days=self.model_config.sequence_length)
-            )
-        ).drop("Date")
-
-        test_df: pl.DataFrame = df.filter(pl.col("Date") >= val_date_cutoff).drop(
-            "Date"
-        )
+        train_df: pl.DataFrame = df.filter(pl.col("Stock ID").is_in(train_stocks))
+        val_df: pl.DataFrame = df.filter(pl.col("Stock ID").is_in(val_stocks))
+        test_df: pl.DataFrame = df.filter(pl.col("Stock ID").is_in(test_stocks))
 
         print(
-            f"Created datasets: Train Length={len(train_df)}, Val Length={len(val_df)}, Test Length={len(test_df)}"
+            f"Num Stocks: Train={len(train_stocks)}, Val={len(val_stocks)}, Test={len(test_stocks)}"
+        )
+        print(
+            f"Num Rows: Train={len(train_df)}, Val={len(val_df)}, Test={len(test_df)}"
         )
 
         return SplitDFDatasets(train_df, val_df, test_df)

@@ -318,15 +318,17 @@ def main(model_config: ModelConfig) -> None:
     info: NASDAQDatasetInfo = downloader.download_dataset(
         save_directory="nasdaq_dataset",
         security_type=SecurityType.STOCK,
-        dataset_creation_option=NASDAQDatasetCreationOptions.REUSE,
+        dataset_creation_option=NASDAQDatasetCreationOptions.REPLACE,
         target=model_config.num_training_files,
     )
 
-    training_data_creator: TrainingDataCreator = TrainingDataCreator(model_config)
+    training_data_creator: TrainingDataCreator = TrainingDataCreator(
+        model_config, downloader.stock_id_map
+    )
     data_loaders: NASDAQDataLoaders = training_data_creator.create_data_loaders_from(
         info.stocks_directory,
         model_config.model_info_dir,
-        dataset_loading_config=DatasetLoadingConfig.REUSE,
+        dataset_loading_config=DatasetLoadingConfig.REPLACE,
     )
 
     # Get 'Close' column dynamically

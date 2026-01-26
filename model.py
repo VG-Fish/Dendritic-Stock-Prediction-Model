@@ -60,8 +60,10 @@ class StockPredictionModel(nn.Module):
             nn.Linear(hidden_dim // 2, output_dim, device=device),
         )
 
-    def forward(self: Self, x: torch.Tensor, stock_id: int) -> torch.Tensor:
+    def forward(self: Self, x: torch.Tensor, stock_id: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, _ = x.shape
+
+        # shape = (Batch Size, Embeddings)
         embedding: torch.Tensor = self.stock_emb(stock_id)
         embedding_expanded: torch.Tensor = embedding.unsqueeze(1).expand(
             batch_size, sequence_length, -1

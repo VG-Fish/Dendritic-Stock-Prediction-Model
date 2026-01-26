@@ -17,6 +17,11 @@ class NASDAQDataLoaders:
 
 class NASDAQDataset(Dataset):
     def __init__(self: Self, df: pl.DataFrame) -> None:
+        if df.is_empty():
+            raise ValueError(
+                "Cannot create dataset as training data is empty! Please try regenerating the dataset again."
+            )
+
         self.stock_ids: torch.Tensor = torch.tensor(
             df["Stock ID"].to_numpy().astype(np.float64), dtype=torch.long
         )
