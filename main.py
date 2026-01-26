@@ -47,7 +47,7 @@ matplotlib.use("Agg")
 @dataclass
 class CalculatedValMetrics:
     avg_loss: float
-    rsme: float
+    rmse: float
     mae: float
     r2: float
 
@@ -237,8 +237,6 @@ def plot_model_test_performance(
         predictions: NDArray = model(X_sample, stock_id).cpu().numpy().flatten()
         targets: NDArray = y_sample.cpu().numpy().flatten()
 
-    fig, ax1 = plt.subplots(1, 1, figsize=(10, 8))
-
     num_samples_to_plot: int = 100
     subset_targets: NDArray = targets[:num_samples_to_plot]
     subset_predictions: NDArray = predictions[:num_samples_to_plot]
@@ -285,7 +283,7 @@ def plot_model_test_performance(
     debug_directory: Path = model.config.model_info_dir / "debug_predictions"
     os.makedirs(debug_directory, exist_ok=True)
     plt.savefig(debug_directory / f"epoch_{epoch}.png")
-    plt.close()
+    plt.close(fig)
 
 
 def clean_dataset_directory(directory: Path) -> None:
@@ -340,12 +338,12 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=64,
+        hidden_dim=256,
         num_layers=2,
         output_dim=1,
-        dropout=0.2,
+        dropout=0.25,
         target_feature_idx=target_idx,
-        embedding_dim=16,
+        embedding_dim=64,
         device=device,
         model_config=model_config,
     ).to(device)
