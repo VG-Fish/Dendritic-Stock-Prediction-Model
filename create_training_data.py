@@ -174,8 +174,11 @@ class TrainingDataCreator:
             .with_columns(
                 [
                     (
-                        (pl.col(c) - pl.col(c).mean().over("Path"))
-                        / pl.col(c).std().over("Path")
+                        (
+                            pl.col(c)
+                            - pl.col(c).rolling_mean(window_size=60).over("Path")
+                        )
+                        / (pl.col(c).rolling_std(window_size=60).over("Path") + 1e-8)
                     ).alias(c)
                     for c in [
                         "Log Return",
@@ -190,6 +193,7 @@ class TrainingDataCreator:
                     ]
                 ]
             )
+            .drop_nulls()
             .join(
                 self.stock_id_map,
                 on="Path",

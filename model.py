@@ -86,3 +86,20 @@ class StockPredictionModel(nn.Module):
         out_logits: torch.Tensor = self.fc(out)
 
         return out_logits
+
+
+class DirectionMSELoss(nn.Module):
+    def __init__(self: Self, penalty_factor: float) -> None:
+        super().__init__()
+        self.mse: nn.Module = nn.MSELoss(reduction="none")
+        self.penalty_factor: float = penalty_factor
+
+    def forward(
+        self: Self, predictions: torch.Tensor, y_targets: torch.Tensor
+    ) -> torch.Tensor:
+        squared_errors: torch.Tensor = self.mse(predictions, y_targets)
+        signs_mismatch: torch.Tensor = (predictions.sign() != y_targets.sign()).float()
+        weighted_loss: torch.Tensor = squared_errors * (
+            signs_mismatch * self.penalty_factor
+        )
+        return weighted_loss.mean()

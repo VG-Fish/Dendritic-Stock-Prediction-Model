@@ -25,7 +25,7 @@ from download import (
     NASDAQDownloader,
     SecurityType,
 )
-from model import StockPredictionModel
+from model import DirectionMSELoss, StockPredictionModel
 from parse_config import ModelConfig, get_config_from_json
 from stocks import NASDAQDataLoaders
 
@@ -66,7 +66,7 @@ def train_step(
 
     train_loss: float = 0
     for X_train, stock_id, y_train in tqdm(
-        train_loader, desc=f"Num Train Batches left for Epoch - {epoch}"
+        train_loader, desc=f"Train Epoch - {epoch}", unit="batch"
     ):
         X_train = X_train.to(device)
         stock_id = stock_id.to(device)
@@ -114,7 +114,11 @@ def evaluate(
     all_predictions: List[NDArray] = []
 
     with torch.no_grad():
-        for X, stock_id, y in tqdm(loader, desc=desc):
+        for X, stock_id, y in tqdm(
+            loader,
+            desc=desc,
+            unit="batch",
+        ):
             X = X.to(device)
             stock_id = stock_id.to(device)
             y = y.to(device)
@@ -154,7 +158,7 @@ def val_step(
         model,
         val_loader,
         criterion,
-        desc=f"Num Val Batches Left for Epoch - {epoch}",
+        desc=f" Val Epoch - {epoch}",
     )
 
     print(f"\nCurrent Val MAE: {metrics.mae:.6f}")
@@ -361,17 +365,19 @@ def main(model_config: ModelConfig) -> None:
 
     model: StockPredictionModel = StockPredictionModel(
         input_dim=9,
-        hidden_dim=384,
+        # Should ideally be a multiple of 6 because of memory usage and predictive scaling
+        hidden_dim=256,
         num_layers=2,
         output_dim=1,
-        dropout=0.3,
+        dropout=0.25,
         target_feature_idx=target_idx,
         embedding_dim=96,
         device=device,
         model_config=model_config,
     ).to(device)
 
-    criterion: nn.HuberLoss = nn.HuberLoss().to(device)
+    criterion: DirectionMSELoss = DirectionMSELoss(penalty_factor=1.5).to(device)
+    # criterion: nn.MSELoss = nn.MSELoss().to(device)
 
     optimizer: optim.AdamW = optim.AdamW(
         model.parameters(),
